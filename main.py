@@ -16,6 +16,7 @@ from src.ai_evaluator import AIEvaluator
 from src.aigc_detector import AIGCDetector
 from src.plagiarism_checker import PlagiarismChecker
 from src.report_generator import ReportGenerator
+from src.standards_generator import StandardsGenerator
 
 
 def load_env():
@@ -27,7 +28,7 @@ def load_env():
         "model": os.getenv("API_MODEL", ""),
         "requirements_doc": os.getenv("REQUIREMENTS_DOC", ""),
         "output_dir": os.getenv("OUTPUT_DIR", "./outputs"),
-        "papers_dir": os.getenv("PAPERS_DIR", ""),  # 论文文件夹路径
+        "papers_dir": os.getenv("PAPERS_DIR", ""),
     }
 
 
@@ -64,6 +65,16 @@ def main():
         action="store_true",
         help="跳过AI评审（仅做格式检测和查重）"
     )
+    parser.add_argument(
+        "--generate-standards", "-g",
+        action="store_true",
+        help="根据题目要求自动生成评分标准（保存到 requirements.yaml），然后退出"
+    )
+    parser.add_argument(
+        "--force-standards",
+        action="store_true",
+        help="强制重新生成评分标准（覆盖已有配置）"
+    )
     args = parser.parse_args()
 
     print("=" * 60)
@@ -73,13 +84,6 @@ def main():
     # ── 1. 加载配置 ──
     print("\n[1/6] 加载配置...")
     env_config = load_env()
-    req_config = load_requirements_config(args.config)
-
-    # 论文文件夹路径：命令行参数 > .env
-    papers_dir = args.papers or env_config["papers_dir"]
-    if not papers_dir:
-        print("  ✗ 未指定论文文件夹，请通过 --papers 参数或 .env 文件配置 PAPERS_DIR")
-        sys.exit(1)
 
     # 题目要求文档路径：命令行参数 > .env
     requirements_doc_path = args.requirements_doc or env_config["requirements_doc"]
@@ -87,22 +91,99 @@ def main():
         print("  ✗ 未指定题目要求文档，请通过 --requirements-doc 参数或 .env 文件配置 REQUIREMENTS_DOC")
         sys.exit(1)
 
-    # 输出目录：命令行参数 > .env > 默认
-    output_dir = args.output or env_config["output_dir"]
-
     # 读取题目要求Word文档
     print(f"  读取题目要求文档: {requirements_doc_path}")
     requirements_text = PaperParser.parse_requirements_doc(requirements_doc_path)
     print(f"  ✓ 题目要求已读取 ({len(requirements_text)}字符)")
 
-    # 评分维度
+    # ── 智能生成评分标准 ──
+    api_config = {
+        "base_url": env_config["base_url"],
+        "api_key": env_config["api_key"],
+        "model": env_config["model"],
+        "temperature": 0.3,
+        "max_tokens": 4096,
+    }
+
+    # 判断是否需要生成评分标准
+    config_path = Path(args.config)
+    need_generate = (
+        args.generate_standards
+        or args.force_standards
+        or not config_path.exists()
+    )
+
+    if need_generate:
+        if args.generate_standards and not args.force_standards and config_path.exists():
+            # 仅生成模式：生成后退出
+            print("\n[生成评分标准] 正在分析题目要求...")
+            generator = StandardsGenerator(api_config)
+            result = generator.generate_and_save(requirements_text, args.config)
+            if result.success:
+                print("\n  ✓ 评分标准生成完成！")
+                print(f"  维度: {', '.join(d['name'] for d in result.dimensions)}")
+                print(f"  章节: {', '.join(result.sections)}")
+                print(f"  最少字数: {result.min_word_count}")
+                print(f"\n  已保存至 {args.config}，请检查后重新运行评审。")
+            else:
+                print(f"\n  ✗ 生成失败: {result.error_message}")
+            return
+
+        # 强制重新生成或配置文件不存在
+        if args.force_standards:
+            print("\n[生成评分标准] 强制重新生成...")
+        else:
+            print("\n[生成评分标准] 未找到配置文件，自动生成...")
+
+        generator = StandardsGenerator(api_config)
+        result = generator.generate_and_save(requirements_text, args.config)
+        if result.success:
+            print("  ✓ 评分标准已生成")
+            print(f"  维度: {', '.join(d['name'] for d in result.dimensions)}")
+            for d in result.dimensions:
+                print(f"    - {d['name']}（{d['weight']*100:.0f}%）：{d['description']}")
+            print(f"  必要章节: {', '.join(result.sections)}")
+            print(f"  最少字数: {result.min_word_count}")
+        else:
+            print(f"  ✗ 生成失败: {result.error_message}")
+            print("  将使用默认评分标准...")
+            args.config = None
+
+    # ── 加载评分标准 ──
+    if args.config and Path(args.config).exists():
+        req_config = load_requirements_config(args.config)
+    else:
+        # 使用默认配置
+        req_config = {
+            "evaluation_criteria": "默认评分标准",
+            "dimensions": [
+                {"name": "内容质量", "weight": 0.30, "description": "内容深度和广度"},
+                {"name": "技术能力", "weight": 0.25, "description": "技术选型和代码质量"},
+                {"name": "文档规范", "weight": 0.20, "description": "报告结构和格式"},
+                {"name": "创新性", "weight": 0.10, "description": "创新点"},
+                {"name": "学术诚信", "weight": 0.15, "description": "原创性"},
+            ],
+        }
+
     dimensions = req_config.get("dimensions", [])
     if not dimensions:
-        print("  ✗ requirements.yaml 中未定义评分维度")
+        print("  ✗ 评分维度为空，请检查配置文件")
         sys.exit(1)
     print(f"  ✓ 评分维度: {', '.join(d['name'] for d in dimensions)}")
 
-    # 输出目录
+    # 从生成的配置中读取章节要求（如果有）
+    generated_meta = req_config.get("_generated", {})
+    auto_sections = generated_meta.get("sections", [])
+    auto_min_word_count = generated_meta.get("min_word_count", 2000)
+
+    # 论文文件夹路径：命令行参数 > .env
+    papers_dir = args.papers or env_config["papers_dir"]
+    if not papers_dir:
+        print("  ✗ 未指定论文文件夹，请通过 --papers 参数或 .env 文件配置 PAPERS_DIR")
+        sys.exit(1)
+
+    # 输出目录：命令行参数 > .env > 默认
+    output_dir = args.output or env_config["output_dir"]
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     print(f"  ✓ 输出目录: {output_path}")
@@ -119,13 +200,16 @@ def main():
 
     # ── 3. 完整性检测 ──
     print("\n[3/6] 完整性检测...")
-    # 根据报告要求调整必要章节
+    # 使用自动生成的章节要求，或默认章节
+    default_sections = auto_sections or [
+        "项目概述", "功能实现", "技术栈", "项目结构",
+        "代码实现", "项目演示截图", "遇到的问题与解决方案", "总结与展望"
+    ]
     completeness_config = {
-        "required_sections": ["项目概述", "功能实现", "技术栈", "项目结构",
-                              "代码实现", "项目演示截图", "遇到的问题与解决方案", "总结与展望"],
-        "min_word_count": 2000,
+        "required_sections": default_sections,
+        "min_word_count": auto_min_word_count,
         "min_references": 0,
-        "require_figures": True,  # 项目报告通常需要截图
+        "require_figures": True,
     }
     completeness_checker = CompletenessChecker(completeness_config)
     completeness_results = []
@@ -167,13 +251,6 @@ def main():
     evaluation_results = []
     if not args.skip_ai:
         print("\n[6/6] AI评审（这可能需要一些时间）...")
-        api_config = {
-            "base_url": env_config["base_url"],
-            "api_key": env_config["api_key"],
-            "model": env_config["model"],
-            "temperature": 0.3,
-            "max_tokens": 4096,
-        }
 
         if not api_config["base_url"] or not api_config["api_key"]:
             print("  ✗ 未配置API地址和密钥，请检查 .env 文件")
@@ -193,7 +270,6 @@ def main():
     # ── 生成报告 ──
     print("\n" + "=" * 60)
     print("生成报告...")
-    
     print("=" * 60)
 
     report_gen = ReportGenerator(output_dir)
