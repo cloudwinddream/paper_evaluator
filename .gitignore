@@ -1,0 +1,39 @@
+# 敏感配置（含API密钥等）
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# 虚拟环境
+venv/
+.venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# 输出文件（根据需求决定是否上传）
+outputs/
+*.xlsx
+*.docx
+*.md
+!README.md
+!config/requirements.yaml
+!config/settings.yaml
+
+# 测试文件
+test_papers/

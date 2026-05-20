@@ -1,0 +1,20 @@
+# 论文评审系统配置文件（非敏感配置）
+# API密钥和路径等请通过 .env 文件配置
+
+# AI评审参数
+ai_evaluation:
+  temperature: 0.3
+  max_tokens: 4096
+  request_delay: 1.0  # 每次API请求间隔（秒）
+
+# AIGC检测配置
+aigc_detection:
+  enabled: true
+  threshold: 0.7
+
+# 查重配置
+plagiarism:
+  enabled: true
+  similarity_threshold: 0.3
+  min_match_length: 20
+  ngram_size: 5

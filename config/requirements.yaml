@@ -1,0 +1,24 @@
+# 评分标准配置
+# 题目要求请放在Word文档中，通过 .env 的 REQUIREMENTS_DOC 指定路径
+
+evaluation_criteria: |
+  评分将基于以下维度，每个维度满分100分，最终加权计算总分（四舍五入取整）。
+  评审时需对照题目要求检查：项目概述、功能实现、技术栈、项目结构、
+  代码实现、项目演示截图、遇到的问题与解决方案、总结与展望等章节是否齐全。
+
+dimensions:
+  - name: "内容质量"
+    weight: 0.30
+    description: "项目完成度、功能实现的完整性和正确性、是否有独到见解"
+  - name: "技术能力"
+    weight: 0.25
+    description: "技术选型合理性、代码质量、架构设计"
+  - name: "文档规范"
+    weight: 0.20
+    description: "报告结构完整性、格式规范性、图表清晰度"
+  - name: "创新性"
+    weight: 0.10
+    description: "是否有创新点、解决问题的独特方法"
+  - name: "学术诚信"
+    weight: 0.15
+    description: "原创性，是否存在抄袭或AI代写"
