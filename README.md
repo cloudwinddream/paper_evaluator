@@ -61,6 +61,7 @@ OUTPUT_DIR=./outputs
 
 ### 4. 运行评审
 
+**命令行：**
 ```bash
 # 自动分析题目要求生成评分标准和完整性规则，然后评审（默认行为）
 python main.py
@@ -77,6 +78,13 @@ python main.py --skip-ai
 # 启用查重检测
 python main.py --plagiarism
 ```
+
+**本地图形界面：**
+```bash
+python gui.py
+```
+
+图形界面提供路径浏览、选项勾选、实时日志显示，配置自动保存到 `.env`。
 
 ## 参数说明
 
@@ -179,7 +187,8 @@ paper_evaluator/
 │   ├── plagiarism_checker.py  # 查重检测（MinHash/中文分词/AI辅助）
 │   ├── standards_generator.py # 智能标准生成（评分+完整性规则）
 │   └── report_generator.py    # 报告生成
-├── main.py                    # 主程序入口
+├── main.py                    # CLI 入口
+├── gui.py                     # 本地图形界面（Tkinter）
 ├── .env                       # 敏感配置（不上传）
 ├── .env.example               # 配置模板
 ├── requirements.txt           # Python 依赖
