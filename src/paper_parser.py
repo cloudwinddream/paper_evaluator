@@ -4,11 +4,175 @@
 """
 
 import re
+import tempfile
 from dataclasses import dataclass, field
 from typing import Optional
 from pathlib import Path
 
 from docx import Document
+
+
+def _try_via_word(doc_path: Path) -> Path | None:
+    """策略1: 通过 Word COM 直接打开（含修复模式）"""
+    import win32com.client
+    try:
+        word = win32com.client.DispatchEx("Word.Application")
+        word.Visible = False
+        doc = word.Documents.Open(
+            str(doc_path.absolute()), ReadOnly=True,
+            AddToRecentFiles=False, OpenAndRepair=True, Format=0,
+        )
+        tmp_dir = Path(tempfile.mkdtemp())
+        docx_path = tmp_dir / f"{doc_path.stem}.docx"
+        doc.SaveAs(str(docx_path.absolute()), FileFormat=16)
+        doc.Close()
+        word.Quit()
+        return docx_path
+    except Exception:
+        try: word.Quit()
+        except: pass
+        return None
+
+
+def _try_via_word_shortpath(doc_path: Path) -> Path | None:
+    """策略2: 复制到短路径后通过 Word 打开"""
+    import win32com.client
+    try:
+        import shutil
+        short_dir = Path(tempfile.mkdtemp())
+        short_path = short_dir / "input.doc"
+        shutil.copy2(doc_path, short_path)
+        word = win32com.client.DispatchEx("Word.Application")
+        word.Visible = False
+        doc = word.Documents.Open(
+            str(short_path.absolute()), ReadOnly=True,
+            AddToRecentFiles=False, OpenAndRepair=True, Format=0,
+        )
+        tmp_dir = Path(tempfile.mkdtemp())
+        docx_path = tmp_dir / f"{doc_path.stem}.docx"
+        doc.SaveAs(str(docx_path.absolute()), FileFormat=16)
+        doc.Close()
+        word.Quit()
+        shutil.rmtree(short_dir, ignore_errors=True)
+        return docx_path
+    except Exception:
+        try: word.Quit()
+        except: pass
+        try: shutil.rmtree(short_dir, ignore_errors=True)
+        except: pass
+        return None
+
+
+def _try_via_word_as_text(doc_path: Path) -> Path | None:
+    """策略3: 通过 Word 以纯文本方式打开（绕过 XML 解析器）"""
+    import win32com.client
+    try:
+        import shutil
+        short_dir = Path(tempfile.mkdtemp())
+        short_path = short_dir / "input.doc"
+        shutil.copy2(doc_path, short_path)
+        word = win32com.client.DispatchEx("Word.Application")
+        word.Visible = False
+        doc = word.Documents.Open(
+            str(short_path.absolute()), ReadOnly=True,
+            AddToRecentFiles=False, Format=7,  # 纯文本
+        )
+        tmp_dir = Path(tempfile.mkdtemp())
+        docx_path = tmp_dir / f"{doc_path.stem}.docx"
+        doc.SaveAs(str(docx_path.absolute()), FileFormat=16)
+        doc.Close()
+        word.Quit()
+        shutil.rmtree(short_dir, ignore_errors=True)
+        return docx_path
+    except Exception:
+        try: word.Quit()
+        except: pass
+        try: shutil.rmtree(short_dir, ignore_errors=True)
+        except: pass
+        return None
+
+
+def _try_as_docx(doc_path: Path) -> Path | None:
+    """策略3: 尝试直接当 .docx 解析（可能只是扩展名错误）"""
+    try:
+        import zipfile
+        from docx import Document as DocxDocument
+        if not zipfile.is_zipfile(doc_path):
+            return None
+        with zipfile.ZipFile(doc_path) as z:
+            if "word/document.xml" not in z.namelist():
+                return None
+        tmp_dir = Path(tempfile.mkdtemp())
+        docx_path = tmp_dir / f"{doc_path.stem}.docx"
+        import shutil
+        shutil.copy2(doc_path, docx_path)
+        DocxDocument(docx_path)
+        return docx_path
+    except Exception:
+        return None
+
+
+def _try_extract_text_raw(doc_path: Path) -> Path | None:
+    """策略4: 从二进制文件中暴力提取可读文本（最后手段）"""
+    try:
+        text_parts = []
+        with open(doc_path, "rb") as f:
+            data = f.read()
+
+        # 尝试 UTF-16LE 解码（Word 内部编码）
+        i = 0
+        current = []
+        while i < len(data) - 1:
+            try:
+                char = data[i:i+2].decode("utf-16-le")
+                if char.isprintable() or char in "\n\r\t":
+                    current.append(char)
+                else:
+                    if len("".join(current)) > 20:
+                        text_parts.append("".join(current))
+                    current = []
+            except:
+                if len("".join(current)) > 20:
+                    text_parts.append("".join(current))
+                current = []
+                i += 1
+                continue
+            i += 2
+
+        text = "\n".join(text_parts)
+        if len(text) < 50:
+            return None
+
+        tmp_dir = Path(tempfile.mkdtemp())
+        docx_path = tmp_dir / f"{doc_path.stem}.docx"
+
+        from docx import Document
+        doc = Document()
+        for line in text.split("\n"):
+            line = line.strip()
+            if line:
+                doc.add_paragraph(line)
+        doc.save(docx_path)
+        return docx_path
+    except Exception:
+        return None
+
+
+def _convert_doc_to_docx(doc_path: Path) -> Path:
+    """将 .doc 文件转换为临时的 .docx 文件（自动尝试多种修复策略）"""
+    strategies = [
+        ("Word 修复模式打开", _try_via_word),
+        ("复制到短路径后重试", _try_via_word_shortpath),
+        ("纯文本方式打开", _try_via_word_as_text),
+        ("尝试作为 .docx 解析", _try_as_docx),
+        ("暴力提取文本", _try_extract_text_raw),
+    ]
+    for name, func in strategies:
+        result = func(doc_path)
+        if result is not None:
+            return result
+
+    raise RuntimeError(f"无法解析文件: {doc_path.name}（所有修复策略均失败）")
 
 
 @dataclass
@@ -47,52 +211,73 @@ class PaperParser:
         self.papers: list[ParsedPaper] = []
 
     def parse_file(self, filepath: str | Path) -> ParsedPaper:
-        """解析单个Word文件"""
+        """解析单个Word文件（支持 .docx 和 .doc）"""
         filepath = Path(filepath)
-        doc = Document(filepath)
 
-        paper = ParsedPaper(
-            filename=filepath.name,
-            student_name=self._extract_student_name(filepath.name),
-        )
+        is_doc = filepath.suffix.lower() == ".doc"
+        temp_docx = None
+        source_path = filepath
 
-        # 提取纯文本
-        paper.raw_text = self._extract_text(doc)
+        if is_doc:
+            temp_docx = _convert_doc_to_docx(filepath)
+            source_path = temp_docx
 
-        # 统计字数（中文字符+英文单词）
-        paper.word_count = self._count_words(paper.raw_text)
+        try:
+            doc = Document(source_path)
 
-        # 段落数
-        paper.paragraph_count = len(doc.paragraphs)
+            paper = ParsedPaper(
+                filename=filepath.name,
+                student_name=self._extract_student_name(filepath.name),
+            )
 
-        # 图片数量
-        paper.figure_count = self._count_figures(doc)
+            # 提取纯文本
+            paper.raw_text = self._extract_text(doc)
 
-        # 表格数量
-        paper.table_count = len(doc.tables)
+            # 统计字数（中文字符+英文单词）
+            paper.word_count = self._count_words(paper.raw_text)
 
-        # 提取各部分内容
-        paper.sections = self._extract_sections(doc)
+            # 段落数
+            paper.paragraph_count = len(doc.paragraphs)
 
-        # 检查必要部分
-        paper.has_abstract = bool(paper.sections.get("abstract"))
-        paper.has_keywords = bool(paper.sections.get("keywords"))
-        paper.has_references = bool(paper.sections.get("references"))
+            # 图片数量
+            paper.figure_count = self._count_figures(doc)
 
-        # 统计参考文献数量
-        paper.reference_count = self._count_references(paper.sections.get("references", ""))
+            # 表格数量
+            paper.table_count = len(doc.tables)
 
-        # 提取标题（通常是文档第一个有意义的段落）
-        paper.title = self._extract_title(doc)
+            # 提取各部分内容
+            paper.sections = self._extract_sections(doc)
 
-        return paper
+            # 检查必要部分
+            paper.has_abstract = bool(paper.sections.get("abstract"))
+            paper.has_keywords = bool(paper.sections.get("keywords"))
+            paper.has_references = bool(paper.sections.get("references"))
+
+            # 统计参考文献数量
+            paper.reference_count = self._count_references(paper.sections.get("references", ""))
+
+            # 提取标题（通常是文档第一个有意义的段落）
+            paper.title = self._extract_title(doc)
+
+            return paper
+        finally:
+            if temp_docx and temp_docx.exists():
+                temp_docx.unlink()
+                try:
+                    temp_docx.parent.rmdir()
+                except OSError:
+                    pass
 
     def parse_directory(self, directory: str | Path) -> list[ParsedPaper]:
-        """解析目录下所有Word文件"""
+        """解析目录下所有Word文件（支持 .docx 和 .doc）"""
         directory = Path(directory)
         self.papers = []
 
-        for filepath in sorted(directory.glob("*.docx")):
+        docx_names = {f.stem for f in directory.glob("*.docx")}
+        for filepath in sorted(directory.glob("*.docx")) + sorted(directory.glob("*.doc")):
+            # 同名的 .doc 和 .docx 同时存在时，跳过 .doc 避免重复
+            if filepath.suffix.lower() == ".doc" and filepath.stem in docx_names:
+                continue
             try:
                 paper = self.parse_file(filepath)
                 self.papers.append(paper)
@@ -176,14 +361,33 @@ class PaperParser:
         return len(lines)
 
     def _extract_student_name(self, filename: str) -> str:
-        """从文件名提取学生姓名"""
-        # 假设文件名格式：学号_姓名.docx 或 姓名_学号.docx 或 姓名.docx
+        """从文件名提取学生标识
+        格式1: 学部-专业-班级-学号-姓名  → 学号-姓名
+        格式2: 学号_姓名                → 学号-姓名
+        格式3: 姓名_题目                → 姓名
+        格式4: 姓名                    → 姓名
+        """
         name = Path(filename).stem
-        # 移除常见的学号模式（纯数字）
-        parts = re.split(r"[_\-\s]", name)
-        for part in parts:
-            if not part.isdigit() and len(part) >= 2:
-                return part
+        parts = [p for p in re.split(r"[_\-\s]+", name) if p]
+
+        # 找出所有数字段（学号）和非数字段
+        digits = [(i, p) for i, p in enumerate(parts) if p.isdigit() and len(p) >= 6]
+        names = [(i, p) for i, p in enumerate(parts) if not p.isdigit() and len(p) >= 2]
+
+        if digits:
+            # 有学号 → 取最后一个学号及它之后的第一个姓名
+            sid_idx, sid = digits[-1]
+            sname = parts[-1]  # 默认取最后一段
+            for i, p in names:
+                if i > sid_idx:
+                    sname = p
+                    break
+            return f"{sid}-{sname}"
+
+        # 无学号 → 取第一个非数字段作为姓名
+        if names:
+            return names[0][1]
+
         return name
 
     def _extract_title(self, doc: Document) -> str:
@@ -199,14 +403,31 @@ class PaperParser:
 
     @staticmethod
     def parse_requirements_doc(filepath: str | Path) -> str:
-        """读取题目要求Word文档，返回纯文本"""
+        """读取题目要求Word文档（支持 .docx 和 .doc），返回纯文本"""
         filepath = Path(filepath)
         if not filepath.exists():
             raise FileNotFoundError(f"题目要求文档不存在: {filepath}")
-        doc = Document(filepath)
-        paragraphs = []
-        for para in doc.paragraphs:
-            text = para.text.strip()
-            if text:
-                paragraphs.append(text)
-        return "\n".join(paragraphs)
+
+        is_doc = filepath.suffix.lower() == ".doc"
+        temp_docx = None
+        source_path = filepath
+
+        if is_doc:
+            temp_docx = _convert_doc_to_docx(filepath)
+            source_path = temp_docx
+
+        try:
+            doc = Document(source_path)
+            paragraphs = []
+            for para in doc.paragraphs:
+                text = para.text.strip()
+                if text:
+                    paragraphs.append(text)
+            return "\n".join(paragraphs)
+        finally:
+            if temp_docx and temp_docx.exists():
+                temp_docx.unlink()
+                try:
+                    temp_docx.parent.rmdir()
+                except OSError:
+                    pass

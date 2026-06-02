@@ -5,6 +5,7 @@
 
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -89,44 +90,69 @@ class StandardsGenerator:
 
     def _build_analysis_prompt(self, requirements: str) -> str:
         """构建分析题目的 prompt"""
-        return f"""你是一位资深的课程设计指导教师。请分析以下课程设计的题目要求，制定一套科学合理的评分标准。
+        return f"""你是一位资深的课程设计指导教师。请严格根据以下题目要求，制定一套完整、细化、可操作的评分标准。
 
 ## 题目要求
 {requirements}
 
-## 任务
-请根据题目要求的内容和特点，完成以下工作：
+## 任务要求
+请逐项完成以下工作：
 
-1. **分析项目类型**：这是什么类型的项目（如管理系统、网站、算法设计等）
-2. **制定评分维度**：设计 4-6 个评分维度，每个维度包含：
-   - name: 维度名称（简洁，2-6字）
-   - weight: 权重（0-1之间的小数，所有维度权重之和为1）
-   - description: 维度说明（一句话，说明这个维度考察什么）
-3. **确定必要章节**：列出学生报告中必须包含的章节/部分
-4. **确定字数要求**：根据项目复杂度给出最低字数建议
-5. **编写评分说明**：一段话说明整体评分原则
+### 1. 提取项目核心要求
+- 明确这个项目的**项目类型**（管理系统 / 网站 / 算法设计 / 数据分析 / 其他）
+- 列出题目中明确要求的**功能模块**和**技术点**
+- 标注题目中提到的**格式要求**（字数、章节、参考文献等）
 
-## 输出格式（严格JSON）
+### 2. 制定评分维度（4-6个）
+每个维度必须包含：
+- **name**: 维度名称（简洁，2-6字）
+- **weight**: 权重（0-1之间的小数，所有维度权重之和严格等于1）
+- **description**: 详细的评分说明（至少50字），包含该维度下什么情况得高分、什么情况扣分
+
+评分维度应覆盖以下方面（根据题目要求调整）：
+- 项目功能完整度和正确性
+- 技术难度和实现质量
+- 报告规范性和完整性
+- 创新性和独立思考
+- 代码质量（如有要求）
+
+### 3. 规定报告章节
+根据题目要求，列出学生报告中**必须包含的章节名称**（按顺序排列）
+
+### 4. 字数要求
+根据题目要求和项目复杂度给出合理的最低字数
+
+### 5. 整体评分说明
+一段话说明评分原则，包括：
+- 总分计算方式
+- 扣分规则（如缺少章节、字数不足、抄袭等）
+- 加分规则（如有创新点、额外功能等）
+
+## 输出格式（严格JSON，不要包含其他内容）
 ```json
 {{
+    "project_type": "项目类型",
     "dimensions": [
-        {{"name": "内容质量", "weight": 0.30, "description": "..."}},
-        {{"name": "技术能力", "weight": 0.25, "description": "..."}}
+        {{"name": "功能完整性", "weight": 0.30, "description": "考察项目功能是否完整实现...（至少50字详细说明）"}},
+        {{"name": "技术实现", "weight": 0.25, "description": "..."}}
     ],
-    "sections": ["章节1", "章节2", "..."],
+    "sections": ["项目概述", "需求分析", "系统设计", "功能实现", "..."]," ,
     "min_word_count": 3000,
-    "evaluation_criteria": "整体评分说明..."
+    "evaluation_criteria": "总分采用加权计算...（整体评分原则，包括扣分和加分规则）"
 }}
 ```
 
 注意：
-- 所有维度权重之和必须等于 1.0
-- 维度数量 4-6 个
-- 章节名称简洁明了
-- 请直接输出JSON，不要包含其他内容"""
+- 维度权重之和必须严格等于 1.0
+- 维度数量控制在 4-6 个
+- description 要足够详细（每个至少50字），不能只有一句话
+- 必须严格根据题目要求来制定，不要套用模板
+- 评分时每个维度及总分均应在 60-89 分之间
+- 请直接输出JSON，不要包含其他任何内容"""
 
     def _call_api(self, prompt: str) -> str:
-        """调用 OpenAI 兼容 API"""
+        """调用 OpenAI 兼容 API（含限流重试）"""
+        import time
         url = f"{self.base_url}/chat/completions"
         payload = {
             "model": self.model,
@@ -137,9 +163,16 @@ class StandardsGenerator:
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
         }
-        response = requests.post(url, headers=self.headers, json=payload, timeout=120)
-        response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"]
+        for attempt in range(5):
+            response = requests.post(url, headers=self.headers, json=payload, timeout=120)
+            if response.status_code == 429:
+                retry_after = int(response.headers.get("Retry-After", 60))
+                print(f"  ⏳ 触发限流，等待 {retry_after} 秒后重试 ({attempt+1}/5)...")
+                time.sleep(retry_after)
+                continue
+            response.raise_for_status()
+            return response.json()["choices"][0]["message"]["content"]
+        raise Exception("API 限流重试次数耗尽")
 
     def _parse_response(self, response: str) -> dict:
         """解析 API 响应"""

@@ -7,6 +7,13 @@ import os
 import sys
 from pathlib import Path
 
+# 修复 Windows 控制台 GBK 编码无法输出 Unicode 的问题
+if sys.stdout.encoding and sys.stdout.encoding.upper() != "UTF-8":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 import yaml
 from dotenv import load_dotenv
 
@@ -64,6 +71,11 @@ def main():
         "--skip-ai",
         action="store_true",
         help="跳过AI评审（仅做格式检测和查重）"
+    )
+    parser.add_argument(
+        "--plagiarism",
+        action="store_true",
+        help="启用查重检测（默认关闭）"
     )
     parser.add_argument(
         "--generate-standards", "-g",
@@ -231,21 +243,25 @@ def main():
               f"{result.overall_risk} (AI概率{result.ai_probability:.0%})")
 
     # ── 5. 查重检测 ──
-    print("\n[5/6] 查重检测...")
-    plagiarism_checker = PlagiarismChecker({
-        "similarity_threshold": 0.3,
-        "min_match_length": 20,
-        "ngram_size": 5,
-    })
-    plagiarism_results = plagiarism_checker.check_all(papers)
+    plagiarism_results = []
+    if args.plagiarism:
+        print("\n[5/6] 查重检测...")
+        plagiarism_checker = PlagiarismChecker({
+            "similarity_threshold": 0.3,
+            "min_match_length": 20,
+            "ngram_size": 5,
+        })
+        plagiarism_results = plagiarism_checker.check_all(papers)
 
-    plag_summary = plagiarism_checker.get_plagiarism_summary(plagiarism_results)
-    if plag_summary["suspected_plagiarism_count"] > 0:
-        print(f"  ⚠ 发现 {plag_summary['suspected_plagiarism_count']} 对疑似抄袭:")
-        for case in plag_summary["details"]:
-            print(f"    - {case['student']} ↔ {case['similar_to']} ({case['similarity']:.0%})")
+        plag_summary = plagiarism_checker.get_plagiarism_summary(plagiarism_results)
+        if plag_summary["suspected_plagiarism_count"] > 0:
+            print(f"  ⚠ 发现 {plag_summary['suspected_plagiarism_count']} 对疑似抄袭:")
+            for case in plag_summary["details"]:
+                print(f"    - {case['student']} ↔ {case['similar_to']} ({case['similarity']:.0%})")
+        else:
+            print("  ✓ 未发现明显抄袭")
     else:
-        print("  ✓ 未发现明显抄袭")
+        print("\n[5/6] 跳过查重检测")
 
     # ── 6. AI评审 ──
     evaluation_results = []

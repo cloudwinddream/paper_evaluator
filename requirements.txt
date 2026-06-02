@@ -3,3 +3,4 @@ openpyxl>=3.1.2
 PyYAML>=6.0.1
 requests>=2.31.0
 python-dotenv>=1.0.0
+pywin32>=306

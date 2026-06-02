@@ -79,38 +79,33 @@ class AIEvaluator:
         dimensions: list[dict],
     ) -> str:
         """构建评审prompt"""
-        # 构建评分维度描述
         dim_desc = "\n".join(
             f"- {d['name']}（权重{d['weight']*100:.0f}%）：{d['description']}"
             for d in dimensions
         )
 
-        # 报告章节要求
-        sections_required = (
-            "报告中应包含以下章节：项目概述、功能实现、技术栈、项目结构、"
-            "代码实现、项目演示截图、遇到的问题与解决方案、总结与展望"
-        )
+        prompt = f"""你是一位严格的课程设计报告评审专家。请根据以下题目要求，评审学生的项目报告。
 
-        prompt = f"""你是一位严格的Java Web项目报告评审专家。请根据以下要求评审学生的项目报告。
-
-## 题目要求（可选项目列表）
+## 课程设计要求
 {requirements}
 
-## 评分标准
-{evaluation_criteria}
-
-## 评分维度
+## 参考评分维度
+以下维度供参考，请根据课程设计的具体类型和要求，自行判断每个维度的实际考察重点，并在评分依据中说明：
 {dim_desc}
 
-## 报告章节要求
-{sections_required}
-
 ## 评审要求
-1. 请严格按照评分维度给出分数，每个维度满分100分，只输出整数
-2. 计算加权总分（满分100分），四舍五入取整
-3. 提供详细的评分依据，指出报告的优点和不足
-4. 给出简短评语（20字以内），包含3-5个关键词
-5. 评分时需对照题目要求检查：项目概述、功能实现、技术栈、项目结构、代码实现、演示截图、问题与方案、总结与展望等章节是否齐全
+1. **严格对照题目要求**进行评审，根据课程设计的类型（管理系统、网站、算法、数据分析等）判断评审重点
+2. 所有维度的分数及综合总分必须在 **60分 ~ 89分** 之间（60分及格，89分封顶），只输出整数
+3. 计算加权总分（四舍五入取整），总分同样必须在60-89之间
+4. 提供详细的评分依据，说明每个维度扣分或得分的原因，并引用学生报告中的具体内容
+5. 给出简短评语（20字以内），包含3-5个关键词，指出主要优缺点
+6. 如果学生报告中缺少题目要求的必要章节或内容，应在对应维度中扣分
+
+## 评分参考标准
+- 优秀（80-89）：完全满足题目要求，内容充实，逻辑清晰，有独立见解
+- 良好（70-79）：基本满足题目要求，内容较完整，有少量不足
+- 及格（60-69）：部分满足题目要求，但存在明显不足或缺失
+- 不及格（<60）：不设置，所有分数必须在60-89之间
 
 ## 输出格式（严格JSON格式）
 ```json
@@ -119,18 +114,18 @@ class AIEvaluator:
         "维度1名称": 整数分数,
         "维度2名称": 整数分数
     }},
-    "total_score": 整数总分,
-    "evaluation_basis": "详细的评分依据...",
+    "total_score": 整数综合总分,
+    "evaluation_basis": "详细的评分依据，包含对各维度得分原因的分析...",
     "short_comment": "关键词1 关键词2 关键词3..."
 }}
 ```
 
-请直接输出JSON，不要包含其他内容，所有分数均为整数。"""
+重要：所有分数（含各维度分和总分）必须在60到89之间，超出范围视为无效。请直接输出JSON。"""
 
         return prompt
 
     def _call_api(self, paper_text: str, system_prompt: str) -> str:
-        """调用OpenAI兼容API"""
+        """调用OpenAI兼容API（含限流重试）"""
         url = f"{self.base_url}/chat/completions"
 
         # 截断过长的文本（避免超出token限制）
@@ -148,11 +143,18 @@ class AIEvaluator:
             "max_tokens": self.max_tokens,
         }
 
-        response = requests.post(url, headers=self.headers, json=payload, timeout=120)
-        response.raise_for_status()
+        for attempt in range(5):
+            response = requests.post(url, headers=self.headers, json=payload, timeout=120)
+            if response.status_code == 429:
+                retry_after = int(response.headers.get("Retry-After", 60))
+                print(f"  ⏳ 触发限流，等待 {retry_after} 秒后重试 ({attempt+1}/5)...")
+                time.sleep(retry_after)
+                continue
+            response.raise_for_status()
+            result = response.json()
+            return result["choices"][0]["message"]["content"]
 
-        result = response.json()
-        return result["choices"][0]["message"]["content"]
+        raise Exception("API 限流重试次数耗尽")
 
     def _parse_response(self, response: str, dimensions: list[dict]) -> dict:
         """解析API响应"""
@@ -185,22 +187,22 @@ class AIEvaluator:
             "short_comment": "",
         }
 
-        # 提取各维度分数（取整）
+        # 提取各维度分数（取整，强制 60-89 范围）
         dim_scores = data.get("dimension_scores", {})
         for dim in dimensions:
             dim_name = dim["name"]
             score = dim_scores.get(dim_name, 0)
-            result["dimension_scores"][dim_name] = min(100, max(0, round(float(score))))
+            result["dimension_scores"][dim_name] = min(89, max(60, round(float(score))))
 
-        # 计算总分（取整）
+        # 计算总分（取整，强制 60-89 范围）
         if result["dimension_scores"]:
             total = sum(
                 result["dimension_scores"].get(d["name"], 0) * d["weight"]
                 for d in dimensions
             )
-            result["total_score"] = round(total)
+            result["total_score"] = min(89, max(60, round(total)))
         else:
-            result["total_score"] = round(float(data.get("total_score", 0)))
+            result["total_score"] = min(89, max(60, round(float(data.get("total_score", 0)))))
 
         result["evaluation_basis"] = data.get("evaluation_basis", "未提供评分依据")
         result["short_comment"] = data.get("short_comment", "无评语")
@@ -218,17 +220,17 @@ class AIEvaluator:
             "short_comment": "解析失败，请人工复核",
         }
 
-        # 尝试提取分数
+        # 尝试提取分数（强制 60-89）
         for dim in dimensions:
             pattern = rf"{dim['name']}[：:]\s*(\d+)"
             match = re.search(pattern, text)
             if match:
-                result["dimension_scores"][dim["name"]] = round(float(match.group(1)))
+                result["dimension_scores"][dim["name"]] = min(89, max(60, round(float(match.group(1)))))
 
-        # 尝试提取总分
+        # 尝试提取总分（强制 60-89）
         total_match = re.search(r"总[分得分][：:]\s*(\d+)", text)
         if total_match:
-            result["total_score"] = round(float(total_match.group(1)))
+            result["total_score"] = min(89, max(60, round(float(total_match.group(1)))))
 
         return result
 
@@ -238,7 +240,7 @@ class AIEvaluator:
         requirements: str,
         evaluation_criteria: str,
         dimensions: list[dict],
-        delay: float = 1.0,
+        delay: float = 60.0,
     ) -> list[EvaluationResult]:
         """批量评审论文"""
         results = []
