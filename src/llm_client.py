@@ -4,7 +4,6 @@
 """
 
 import json
-import time
 from typing import Optional
 
 import requests
@@ -88,16 +87,10 @@ class LLMClient:
                 continue
 
             if resp.status_code == 429:
-                retry_after = int(resp.headers.get("Retry-After", 30))
-                if attempt % max_retries_per_provider < max_retries_per_provider - 1:
-                    print(f"  ⏳ [{provider['model']}] 触发限流，等待 {retry_after} 秒后重试...")
-                    time.sleep(retry_after)
-                    continue
-                else:
-                    last_error = f"[{provider['model']}] 限流重试耗尽"
-                    print(f"  ⚠ {last_error}，切换下一个...")
-                    self._switch_provider()
-                    continue
+                last_error = f"[{provider['model']}] 触发限流"
+                print(f"  ⚠ {last_error}，切换下一个...")
+                self._switch_provider()
+                continue
 
             if resp.status_code == 401:
                 last_error = f"[{provider['model']}] 鉴权失败（API Key 无效）"
