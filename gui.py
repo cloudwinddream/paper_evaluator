@@ -225,7 +225,7 @@ class App(Tk):
     # ── 执行流水线 ──
 
     def _build_args(self, generate_only: bool = False) -> list[str]:
-        args = ["python", "main.py"]
+        args = [sys.executable, "main.py"]
 
         # 路径参数
         papers = self.papers_var.get().strip()
