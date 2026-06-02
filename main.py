@@ -29,10 +29,22 @@ from src.standards_generator import StandardsGenerator
 def load_env():
     """加载 .env 文件并返回配置字典"""
     load_dotenv()
+
+    # 读取所有 provider 配置（API_1, API_2, ... + 兼容旧版单 API 配置）
+    providers = []
+    for key_suffix in ["", "_2", "_3", "_4", "_5"]:
+        base_url = os.getenv(f"API_BASE_URL{key_suffix}")
+        api_key = os.getenv(f"API_KEY{key_suffix}")
+        model = os.getenv(f"API_MODEL{key_suffix}")
+        if base_url and api_key and model:
+            providers.append({
+                "base_url": base_url,
+                "api_key": api_key,
+                "model": model,
+            })
+
     return {
-        "base_url": os.getenv("API_BASE_URL", ""),
-        "api_key": os.getenv("API_KEY", ""),
-        "model": os.getenv("API_MODEL", ""),
+        "providers": providers,
         "requirements_doc": os.getenv("REQUIREMENTS_DOC", ""),
         "output_dir": os.getenv("OUTPUT_DIR", "./outputs"),
         "papers_dir": os.getenv("PAPERS_DIR", ""),
@@ -114,13 +126,14 @@ def main():
     print(f"  ✓ 题目要求已读取 ({len(requirements_text)}字符)")
 
     # ── 智能生成评分标准 ──
-    api_config = {
-        "base_url": env_config["base_url"],
-        "api_key": env_config["api_key"],
-        "model": env_config["model"],
-        "temperature": 0.3,
-        "max_tokens": 4096,
-    }
+    providers = env_config.get("providers", [])
+    if not providers:
+        print("  ✗ 未配置 API，请检查 .env 中的 API_BASE_URL / API_KEY / API_MODEL")
+        sys.exit(1)
+    print(f"  ✓ 已加载 {len(providers)} 个 API Provider: {', '.join(p['model'] for p in providers)}")
+
+    from src.llm_client import LLMClient
+    llm_client = LLMClient(providers)
 
     # 判断是否跳过自动生成评分标准
     config_path = Path(args.config)
@@ -128,7 +141,7 @@ def main():
     if args.generate_standards and not args.force_standards and config_path.exists():
         # 仅生成模式：生成后退出
         print("\n[生成评分标准] 正在分析题目要求...")
-        generator = StandardsGenerator(api_config)
+        generator = StandardsGenerator(llm_client)
         result = generator.generate_and_save(requirements_text, args.config)
         if result.success:
             print("\n  ✓ 评分标准生成完成！")
@@ -146,7 +159,7 @@ def main():
         else:
             print("\n[生成评分标准] 根据题目要求自动生成...")
 
-        generator = StandardsGenerator(api_config)
+        generator = StandardsGenerator(llm_client)
         result = generator.generate_and_save(requirements_text, args.config)
         if result.success:
             print("  ✓ 评分标准已生成")
@@ -270,12 +283,7 @@ def main():
     evaluation_results = []
     if not args.skip_ai:
         print("\n[6/6] AI评审（这可能需要一些时间）...")
-
-        if not api_config["base_url"] or not api_config["api_key"]:
-            print("  ✗ 未配置API地址和密钥，请检查 .env 文件")
-            sys.exit(1)
-
-        ai_evaluator = AIEvaluator(api_config)
+        ai_evaluator = AIEvaluator(llm_client)
         evaluation_results = ai_evaluator.evaluate_batch(
             papers=papers,
             requirements=requirements_text,

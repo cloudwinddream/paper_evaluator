@@ -11,6 +11,7 @@
 5. **查重检测** — 学生报告两两比对（默认关闭，需 `--plagiarism` 开启）
 6. **报告生成** — 自动生成 Excel 汇总表、Word 详细报告和 Markdown 评审报告
 7. **支持 .doc** — 兼容旧版 Word 格式（自动转换修复）
+8. **多 Provider 自动容灾** — 配置多个 API Provider，遇限流(429)/鉴权失败/token超限/网络故障时自动切换
 
 ## 快速开始
 
@@ -31,9 +32,21 @@ cp .env.example .env
 编辑 `.env`：
 
 ```env
+# 第一 API Provider（必填）
 API_BASE_URL=https://your-api-endpoint.com/v1
 API_KEY=your-api-key
 API_MODEL=your-model-name
+
+# 第二 API Provider（可选，遇限流/鉴错时自动切换）
+API_BASE_URL_2=https://api.openai.com/v1
+API_KEY_2=sk-your-second-key
+API_MODEL_2=gpt-4o-mini
+
+# 第三、四……以此类推（可选）
+# API_BASE_URL_3=...
+# API_KEY_3=...
+# API_MODEL_3=...
+
 PAPERS_DIR=./学生论文文件夹路径
 REQUIREMENTS_DOC=./题目要求.docx
 OUTPUT_DIR=./outputs
@@ -79,6 +92,16 @@ python main.py --plagiarism
 | `--generate-standards, -g` | 仅生成评分标准后退出 |
 | `--force-standards` | 强制重新生成评分标准 |
 
+## API 多 Provider 自动容灾
+
+可配置多个 API Provider（`API_*_2`、`API_*_3`……），按顺序优先使用第一个，遇以下情况自动切换到下一个：
+- **429 限流** — 自动等待重试后切换
+- **401 鉴权失败** — API Key 无效时跳过
+- **Token 超限** — 上下文过长时自动切换
+- **网络超时/连接失败** — 网络故障时自动跳转
+
+系统会遍历所有 Provider，直到成功返回结果；若全部失败则报错。
+
 ## 评分机制
 
 - 每次运行自动调用 AI 分析题目要求，动态生成评分维度和标准
@@ -104,6 +127,7 @@ paper_evaluator/
 ├── src/
 │   ├── paper_parser.py        # Word 文档解析（支持 .doc / .docx）
 │   ├── completeness_checker.py # 完整性检测
+│   ├── llm_client.py          # 多 Provider LLM 客户端（自动容灾）
 │   ├── ai_evaluator.py        # AI 评审（60-89 分范围）
 │   ├── aigc_detector.py       # AIGC 检测
 │   ├── plagiarism_checker.py  # 查重检测

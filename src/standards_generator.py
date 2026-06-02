@@ -5,23 +5,23 @@
 
 import json
 import re
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-import requests
 import yaml
+
+from src.llm_client import LLMClient
 
 
 @dataclass
 class GeneratedStandards:
     """大模型生成的评分标准"""
-    dimensions: list[dict] = field(default_factory=list)   # 评分维度列表
-    sections: list[str] = field(default_factory=list)       # 必要章节
-    min_word_count: int = 2000                              # 最少字数
-    evaluation_criteria: str = ""                           # 评分说明
-    raw_response: str = ""                                  # 原始API响应
+    dimensions: list[dict] = field(default_factory=list)
+    sections: list[str] = field(default_factory=list)
+    min_word_count: int = 2000
+    evaluation_criteria: str = ""
+    raw_response: str = ""
     success: bool = True
     error_message: str = ""
 
@@ -29,28 +29,22 @@ class GeneratedStandards:
 class StandardsGenerator:
     """智能评分标准生成器"""
 
-    def __init__(self, api_config: dict):
-        self.base_url = api_config["base_url"].rstrip("/")
-        self.api_key = api_config["api_key"]
-        self.model = api_config["model"]
-        self.temperature = api_config.get("temperature", 0.3)
-        self.max_tokens = api_config.get("max_tokens", 4096)
-        self.headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}",
-        }
+    def __init__(self, llm_client: LLMClient):
+        self.llm = llm_client
 
     def generate(self, requirements: str) -> GeneratedStandards:
-        """
-        根据题目要求自动生成评分标准
-        返回 GeneratedStandards，包含维度、章节、字数要求等
-        """
         result = GeneratedStandards()
-
         prompt = self._build_analysis_prompt(requirements)
 
         try:
-            response = self._call_api(prompt)
+            response = self.llm.chat(
+                messages=[
+                    {"role": "system", "content": "你是一位资深的课程设计指导教师，擅长制定评分标准。"},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.3,
+                max_tokens=4096,
+            )
             result.raw_response = response
             parsed = self._parse_response(response)
             result.dimensions = parsed.get("dimensions", [])
@@ -68,7 +62,6 @@ class StandardsGenerator:
         requirements: str,
         output_path: str | Path = "config/requirements.yaml",
     ) -> GeneratedStandards:
-        """生成评分标准并保存到 yaml 文件"""
         result = self.generate(requirements)
 
         if result.success and result.dimensions:
@@ -89,7 +82,6 @@ class StandardsGenerator:
         return result
 
     def _build_analysis_prompt(self, requirements: str) -> str:
-        """构建分析题目的 prompt"""
         return f"""你是一位资深的课程设计指导教师。请严格根据以下题目要求，制定一套完整、细化、可操作的评分标准。
 
 ## 题目要求
@@ -109,13 +101,6 @@ class StandardsGenerator:
 - **weight**: 权重（0-1之间的小数，所有维度权重之和严格等于1）
 - **description**: 详细的评分说明（至少50字），包含该维度下什么情况得高分、什么情况扣分
 
-评分维度应覆盖以下方面（根据题目要求调整）：
-- 项目功能完整度和正确性
-- 技术难度和实现质量
-- 报告规范性和完整性
-- 创新性和独立思考
-- 代码质量（如有要求）
-
 ### 3. 规定报告章节
 根据题目要求，列出学生报告中**必须包含的章节名称**（按顺序排列）
 
@@ -125,57 +110,30 @@ class StandardsGenerator:
 ### 5. 整体评分说明
 一段话说明评分原则，包括：
 - 总分计算方式
-- 扣分规则（如缺少章节、字数不足、抄袭等）
-- 加分规则（如有创新点、额外功能等）
+- 扣分规则
+- 加分规则
 
-## 输出格式（严格JSON，不要包含其他内容）
+## 输出格式（严格JSON）
 ```json
 {{
     "project_type": "项目类型",
     "dimensions": [
-        {{"name": "功能完整性", "weight": 0.30, "description": "考察项目功能是否完整实现...（至少50字详细说明）"}},
+        {{"name": "功能完整性", "weight": 0.30, "description": "详细说明..."}},
         {{"name": "技术实现", "weight": 0.25, "description": "..."}}
     ],
-    "sections": ["项目概述", "需求分析", "系统设计", "功能实现", "..."]," ,
+    "sections": ["项目概述", "需求分析", "..."],
     "min_word_count": 3000,
-    "evaluation_criteria": "总分采用加权计算...（整体评分原则，包括扣分和加分规则）"
+    "evaluation_criteria": "整体评分原则..."
 }}
 ```
 
 注意：
 - 维度权重之和必须严格等于 1.0
-- 维度数量控制在 4-6 个
-- description 要足够详细（每个至少50字），不能只有一句话
-- 必须严格根据题目要求来制定，不要套用模板
-- 评分时每个维度及总分均应在 60-89 分之间
-- 请直接输出JSON，不要包含其他任何内容"""
-
-    def _call_api(self, prompt: str) -> str:
-        """调用 OpenAI 兼容 API（含限流重试）"""
-        import time
-        url = f"{self.base_url}/chat/completions"
-        payload = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": "你是一位资深的课程设计指导教师，擅长制定评分标准。"},
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
-        }
-        for attempt in range(5):
-            response = requests.post(url, headers=self.headers, json=payload, timeout=120)
-            if response.status_code == 429:
-                retry_after = int(response.headers.get("Retry-After", 60))
-                print(f"  ⏳ 触发限流，等待 {retry_after} 秒后重试 ({attempt+1}/5)...")
-                time.sleep(retry_after)
-                continue
-            response.raise_for_status()
-            return response.json()["choices"][0]["message"]["content"]
-        raise Exception("API 限流重试次数耗尽")
+- 维度数量 4-6 个
+- description 每个至少50字
+- 请直接输出JSON，不要包含其他内容"""
 
     def _parse_response(self, response: str) -> dict:
-        """解析 API 响应"""
         json_str = response
         if "```" in response:
             match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", response, re.DOTALL)
@@ -188,20 +146,16 @@ class StandardsGenerator:
             json_str = json_str.strip().strip("`").strip()
             data = json.loads(json_str)
 
-        # 校验并修正权重
         dimensions = data.get("dimensions", [])
         if dimensions:
             total_weight = sum(d.get("weight", 0) for d in dimensions)
-            # 如果权重和不等于1，按比例修正
             if abs(total_weight - 1.0) > 0.01:
                 for d in dimensions:
                     d["weight"] = round(d["weight"] / total_weight, 2)
-                # 修正最后一个维度的权重确保总和为1
                 dimensions[-1]["weight"] = round(
                     1.0 - sum(d["weight"] for d in dimensions[:-1]), 2
                 )
 
-        # 校验分数范围
         for d in dimensions:
             d["weight"] = max(0.05, min(0.50, d["weight"]))
 

@@ -4,12 +4,12 @@ AI模型评审评分模块
 """
 
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Optional
 
-import requests
-
+from src.llm_client import LLMClient
 from src.paper_parser import ParsedPaper
 
 
@@ -17,28 +17,20 @@ from src.paper_parser import ParsedPaper
 class EvaluationResult:
     """评审结果"""
     student_name: str
-    total_score: float = 0.0           # 总分
-    dimension_scores: dict = field(default_factory=dict)  # 各维度得分
-    evaluation_basis: str = ""         # 评分依据
-    short_comment: str = ""            # 简短评语（含关键词）
-    raw_response: str = ""             # 原始API响应
-    success: bool = True               # 是否成功
-    error_message: str = ""            # 错误信息
+    total_score: float = 0.0
+    dimension_scores: dict = field(default_factory=dict)
+    evaluation_basis: str = ""
+    short_comment: str = ""
+    raw_response: str = ""
+    success: bool = True
+    error_message: str = ""
 
 
 class AIEvaluator:
     """AI论文评审器"""
 
-    def __init__(self, api_config: dict):
-        self.base_url = api_config["base_url"].rstrip("/")
-        self.api_key = api_config["api_key"]
-        self.model = api_config["model"]
-        self.temperature = api_config.get("temperature", 0.3)
-        self.max_tokens = api_config.get("max_tokens", 4096)
-        self.headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}",
-        }
+    def __init__(self, llm_client: LLMClient):
+        self.llm = llm_client
 
     def evaluate(
         self,
@@ -50,15 +42,24 @@ class AIEvaluator:
         """评审单篇论文"""
         result = EvaluationResult(student_name=paper.student_name)
 
-        # 构建评审prompt
         prompt = self._build_prompt(paper, requirements, evaluation_criteria, dimensions)
 
         try:
-            # 调用API
-            response = self._call_api(paper.raw_text, prompt)
+            paper_text = paper.raw_text
+            max_chars = 15000
+            if len(paper_text) > max_chars:
+                paper_text = paper_text[:max_chars] + "\n...（论文内容过长，已截断）"
+
+            response = self.llm.chat(
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": f"请评审以下论文：\n\n{paper_text}"},
+                ],
+                temperature=0.3,
+                max_tokens=4096,
+            )
             result.raw_response = response
 
-            # 解析响应
             parsed = self._parse_response(response, dimensions)
             result.total_score = parsed.get("total_score", 0)
             result.dimension_scores = parsed.get("dimension_scores", {})
@@ -124,46 +125,11 @@ class AIEvaluator:
 
         return prompt
 
-    def _call_api(self, paper_text: str, system_prompt: str) -> str:
-        """调用OpenAI兼容API（含限流重试）"""
-        url = f"{self.base_url}/chat/completions"
-
-        # 截断过长的文本（避免超出token限制）
-        max_chars = 15000
-        if len(paper_text) > max_chars:
-            paper_text = paper_text[:max_chars] + "\n...（论文内容过长，已截断）"
-
-        payload = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"请评审以下论文：\n\n{paper_text}"},
-            ],
-            "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
-        }
-
-        for attempt in range(5):
-            response = requests.post(url, headers=self.headers, json=payload, timeout=120)
-            if response.status_code == 429:
-                retry_after = int(response.headers.get("Retry-After", 60))
-                print(f"  ⏳ 触发限流，等待 {retry_after} 秒后重试 ({attempt+1}/5)...")
-                time.sleep(retry_after)
-                continue
-            response.raise_for_status()
-            result = response.json()
-            return result["choices"][0]["message"]["content"]
-
-        raise Exception("API 限流重试次数耗尽")
-
     def _parse_response(self, response: str, dimensions: list[dict]) -> dict:
         """解析API响应"""
-        # 尝试提取JSON
         json_str = response
 
-        # 如果响应包含```json```标记，提取其中的内容
         if "```" in response:
-            import re
             match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", response, re.DOTALL)
             if match:
                 json_str = match.group(1)
@@ -171,15 +137,12 @@ class AIEvaluator:
         try:
             data = json.loads(json_str)
         except json.JSONDecodeError:
-            # 尝试修复常见的JSON问题
             json_str = json_str.strip().strip("`").strip()
             try:
                 data = json.loads(json_str)
             except json.JSONDecodeError:
-                # 如果还是失败，尝试从文本中提取信息
                 return self._extract_from_text(response, dimensions)
 
-        # 标准化结果
         result = {
             "dimension_scores": {},
             "total_score": 0,
@@ -187,14 +150,12 @@ class AIEvaluator:
             "short_comment": "",
         }
 
-        # 提取各维度分数（取整，强制 60-89 范围）
         dim_scores = data.get("dimension_scores", {})
         for dim in dimensions:
             dim_name = dim["name"]
             score = dim_scores.get(dim_name, 0)
             result["dimension_scores"][dim_name] = min(89, max(60, round(float(score))))
 
-        # 计算总分（取整，强制 60-89 范围）
         if result["dimension_scores"]:
             total = sum(
                 result["dimension_scores"].get(d["name"], 0) * d["weight"]
@@ -211,8 +172,6 @@ class AIEvaluator:
 
     def _extract_from_text(self, text: str, dimensions: list[dict]) -> dict:
         """从非结构化文本中提取评分信息（备用方案）"""
-        import re
-
         result = {
             "dimension_scores": {},
             "total_score": 0,
@@ -220,14 +179,12 @@ class AIEvaluator:
             "short_comment": "解析失败，请人工复核",
         }
 
-        # 尝试提取分数（强制 60-89）
         for dim in dimensions:
             pattern = rf"{dim['name']}[：:]\s*(\d+)"
             match = re.search(pattern, text)
             if match:
                 result["dimension_scores"][dim["name"]] = min(89, max(60, round(float(match.group(1)))))
 
-        # 尝试提取总分（强制 60-89）
         total_match = re.search(r"总[分得分][：:]\s*(\d+)", text)
         if total_match:
             result["total_score"] = min(89, max(60, round(float(total_match.group(1)))))
@@ -257,7 +214,6 @@ class AIEvaluator:
             else:
                 print(f"  → 评审失败: {result.error_message}")
 
-            # 避免API限流
             if i < total:
                 time.sleep(delay)
 
