@@ -142,7 +142,36 @@ class App(Tk):
                    ).grid(row=row, column=2, padx=(4, 0))
         row += 1
 
-        # ── 选项（第二行） ──
+        # ── API 配置（分隔线） ──
+        sep = ttk.Separator(parent, orient="horizontal")
+        sep.grid(row=row, column=0, columnspan=3, sticky="ew", pady=6)
+        row += 1
+
+        ttk.Label(parent, text="LLM 配置", font=("", 10, "bold")
+                  ).grid(row=row, column=0, columnspan=3, sticky="w")
+        row += 1
+
+        # Provider 1
+        self._add_provider_fields(parent, row, 1, env)
+        row += 4
+
+        # Provider 2（可选）
+        has_2 = env.get("API_BASE_URL_2") or env.get("API_KEY_2") or env.get("API_MODEL_2")
+        self.show_provider_2 = BooleanVar(value=bool(has_2))
+        ttk.Checkbutton(parent, text="配置备用 Provider（限流/故障时自动切换）",
+                        variable=self.show_provider_2,
+                        command=lambda: self._toggle_provider_2(parent, row, env)
+                        ).grid(row=row, column=0, columnspan=3, sticky="w")
+        self.provider_2_frame = ttk.Frame(parent)
+        self.provider_2_frame.grid(row=row + 1, column=0, columnspan=3, sticky="ew",
+                                   padx=(0, 0), pady=(2, 0))
+        if has_2:
+            self._add_provider_fields(self.provider_2_frame, 0, 2, env)
+        else:
+            self.provider_2_frame.grid_remove()
+        row += 2
+
+        # ── 选项 ──
         opt_frame = ttk.Frame(parent)
         opt_frame.grid(row=row, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
@@ -160,14 +189,62 @@ class App(Tk):
 
     # ── 工具方法 ──
 
+    def _add_provider_fields(self, parent, row, idx, env):
+        suffix = f"_{idx}" if idx > 1 else ""
+        ttk.Label(parent, text=f"API 地址 {idx}:").grid(row=row, column=0, sticky="w", padx=(0, 6))
+        var = StringVar(value=env.get(f"API_BASE_URL{suffix}", ""))
+        entry = ttk.Entry(parent, textvariable=var)
+        entry.grid(row=row, column=1, columnspan=2, sticky="ew", padx=2)
+        setattr(self, f"api_url_{idx}_var", var)
+        row += 1
+
+        ttk.Label(parent, text=f"API 密钥 {idx}:").grid(row=row, column=0, sticky="w", padx=(0, 6))
+        var = StringVar(value=env.get(f"API_KEY{suffix}", ""))
+        entry = ttk.Entry(parent, textvariable=var, show="*")
+        entry.grid(row=row, column=1, columnspan=2, sticky="ew", padx=2)
+        # 显示/隐藏密钥
+        show_btn = ttk.Button(parent, text="👁", width=3,
+                              command=lambda e=entry: self._toggle_key_visibility(e))
+        show_btn.grid(row=row, column=3, padx=(2, 0))
+        setattr(self, f"api_key_{idx}_var", var)
+        row += 1
+
+        ttk.Label(parent, text=f"模型 {idx}:").grid(row=row, column=0, sticky="w", padx=(0, 6))
+        var = StringVar(value=env.get(f"API_MODEL{suffix}", "gpt-4o-mini"))
+        entry = ttk.Entry(parent, textvariable=var)
+        entry.grid(row=row, column=1, columnspan=2, sticky="ew", padx=2)
+        setattr(self, f"api_model_{idx}_var", var)
+        row += 1
+
+        # idx=1 的 provider 2 容器使用父级的行
+
+    def _toggle_key_visibility(self, entry):
+        if entry.cget("show") == "*":
+            entry.config(show="")
+        else:
+            entry.config(show="*")
+
+    def _toggle_provider_2(self, parent, row, env):
+        if self.show_provider_2.get():
+            self.provider_2_frame.grid()
+            if not hasattr(self, "api_url_2_var"):
+                self._add_provider_fields(self.provider_2_frame, 0, 2,
+                                          {"API_BASE_URL_2": "", "API_KEY_2": "", "API_MODEL_2": "gpt-4o-mini"})
+        else:
+            self.provider_2_frame.grid_remove()
+
     def _load_env(self) -> dict:
         if self._env_path.exists():
             load_dotenv(self._env_path)
-        return {
+        env = {
             "PAPERS_DIR": os.getenv("PAPERS_DIR", ""),
             "REQUIREMENTS_DOC": os.getenv("REQUIREMENTS_DOC", ""),
             "OUTPUT_DIR": os.getenv("OUTPUT_DIR", "./outputs"),
         }
+        for suffix in ["", "_2"]:
+            for key in ["API_BASE_URL", "API_KEY", "API_MODEL"]:
+                env[f"{key}{suffix}"] = os.getenv(f"{key}{suffix}", "")
+        return env
 
     def _save_to_env(self):
         """将当前界面值写入 .env"""
@@ -176,6 +253,11 @@ class App(Tk):
             ("REQUIREMENTS_DOC", self.req_var.get()),
             ("OUTPUT_DIR", self.out_var.get()),
         ]
+        for idx in [1, 2]:
+            suffix = f"_{idx}" if idx > 1 else ""
+            pairs.append((f"API_BASE_URL{suffix}", getattr(self, f"api_url_{idx}_var").get()))
+            pairs.append((f"API_KEY{suffix}", getattr(self, f"api_key_{idx}_var").get()))
+            pairs.append((f"API_MODEL{suffix}", getattr(self, f"api_model_{idx}_var").get()))
         for key, val in pairs:
             set_key(str(self._env_path), key, val)
 
