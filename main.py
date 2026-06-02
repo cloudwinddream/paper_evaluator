@@ -146,7 +146,8 @@ def main():
         if result.success:
             print("\n  ✓ 评分标准生成完成！")
             print(f"  维度: {', '.join(d['name'] for d in result.dimensions)}")
-            print(f"  章节: {', '.join(result.sections)}")
+            sec_names = [s['name'] if isinstance(s, dict) else s for s in result.sections]
+            print(f"  章节: {', '.join(sec_names)}")
             print(f"  最少字数: {result.min_word_count}")
             print(f"\n  已保存至 {args.config}，请检查后重新运行评审。")
         else:
@@ -167,8 +168,9 @@ def main():
                 print(f"  维度: {', '.join(d['name'] for d in result.dimensions)}")
                 for d in result.dimensions:
                     print(f"    - {d['name']}（{d['weight']*100:.0f}%）：{d['description']}")
-            if result.sections:
-                print(f"  必要章节: {', '.join(result.sections)}")
+            sec_names = [s['name'] if isinstance(s, dict) else s for s in result.sections] if result.sections else []
+            if sec_names:
+                print(f"  必要章节: {', '.join(sec_names)}")
             print(f"  最少字数: {result.min_word_count}")
         else:
             print(f"  ✗ 生成失败: {result.error_message}")
@@ -199,11 +201,6 @@ def main():
         sys.exit(1)
     print(f"  ✓ 评分维度: {', '.join(d['name'] for d in dimensions)}")
 
-    # 从生成的配置中读取章节要求（如果有）
-    generated_meta = req_config.get("_generated", {})
-    auto_sections = generated_meta.get("sections", [])
-    auto_min_word_count = generated_meta.get("min_word_count", 2000)
-
     # 论文文件夹路径：命令行参数 > .env
     papers_dir = args.papers or env_config["papers_dir"]
     if not papers_dir:
@@ -228,24 +225,35 @@ def main():
 
     # ── 3. 完整性检测 ──
     print("\n[3/6] 完整性检测...")
-    # 使用自动生成的章节要求，或默认章节
-    default_sections = auto_sections or [
-        "项目概述", "功能实现", "技术栈", "项目结构",
-        "代码实现", "项目演示截图", "遇到的问题与解决方案", "总结与展望"
-    ]
-    completeness_config = {
-        "required_sections": default_sections,
-        "min_word_count": auto_min_word_count,
-        "min_references": 0,
-        "require_figures": True,
-    }
-    completeness_checker = CompletenessChecker(completeness_config)
+    # 从生成的配置中读取完整性规则
+    completeness_rules = req_config.get("completeness", {})
+    if not completeness_rules or not completeness_rules.get("sections"):
+        # 向后兼容：从旧版 _generated 或默认值构造
+        generated_meta = req_config.get("_generated", {})
+        old_sections = generated_meta.get("sections", [
+            "项目概述", "功能实现", "技术栈", "项目结构",
+            "代码实现", "项目演示截图", "遇到的问题与解决方案", "总结与展望"
+        ])
+        old_min_words = generated_meta.get("min_word_count", 3000)
+        completeness_rules = {
+            "sections_weight": 40,
+            "sections": [{"name": s, "patterns": [s], "weight": 0} for s in old_sections],
+            "word_count": {"min": old_min_words, "weight": 20},
+            "references": {"min": 0, "weight": 10},
+            "figures": {"min": 3, "weight": 15},
+            "format": {"min_paragraphs": 10, "max_long_line_ratio": 0.3, "weight": 15},
+        }
+
+    completeness_checker = CompletenessChecker(completeness_rules)
     completeness_results = []
     for paper in papers:
         result = completeness_checker.check(paper)
         completeness_results.append(result)
         status = "✓" if result.is_complete else "⚠"
-        print(f"  {status} {paper.student_name}: {result.score:.0f}分")
+        details = []
+        if result.missing_sections:
+            details.append(f"缺{len(result.missing_sections)}章")
+        print(f"  {status} {paper.student_name}: {result.score:.0f}分{' - ' + ', '.join(details) if details else ''}")
 
     # ── 4. AIGC检测 ──
     print("\n[4/6] AIGC检测...")

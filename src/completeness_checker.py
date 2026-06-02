@@ -1,6 +1,6 @@
 """
 论文完整性检测模块
-检查论文是否包含必要部分，字数是否达标等
+从 requirements.yaml 加载动态规则进行检测
 """
 
 import re
@@ -11,61 +11,82 @@ from src.paper_parser import ParsedPaper
 
 @dataclass
 class CompletenessResult:
-    """完整性检测结果"""
     student_name: str
-    is_complete: bool = True                    # 是否完整
-    score: float = 100.0                        # 完整性得分
-    missing_sections: list[str] = field(default_factory=list)  # 缺失部分
-    warnings: list[str] = field(default_factory=list)          # 警告信息
-    details: dict = field(default_factory=dict)                 # 详细检查项
+    is_complete: bool = True
+    score: float = 100.0
+    missing_sections: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    details: dict = field(default_factory=dict)
+    dimension_scores: dict = field(default_factory=dict)   # 各维度得分明细
 
 
 class CompletenessChecker:
-    """论文完整性检查器"""
+    """论文完整性检查器（规则由 AI 动态生成）"""
 
     def __init__(self, config: dict):
-        self.required_sections = config.get("required_sections", [])
-        self.min_word_count = config.get("min_word_count", 3000)
-        self.min_references = config.get("min_references", 5)
-        self.require_figures = config.get("require_figures", False)
+        # 从 requirements.yaml 的 completeness 字段加载规则
+        self.sections = config.get("sections", [])
+        self.word_count_cfg = config.get("word_count", {"min": 3000, "weight": 20})
+        self.references_cfg = config.get("references", {"min": 5, "weight": 10})
+        self.figures_cfg = config.get("figures", {"min": 3, "weight": 15})
+        self.format_cfg = config.get("format", {"min_paragraphs": 10, "max_long_line_ratio": 0.3, "weight": 15})
+
+        self.sections_weight = config.get("sections_weight", 40)
+        self.word_count_weight = self.word_count_cfg.get("weight", 20)
+        self.references_weight = self.references_cfg.get("weight", 10)
+        self.figures_weight = self.figures_cfg.get("weight", 15)
+        self.format_weight = self.format_cfg.get("weight", 15)
 
     def check(self, paper: ParsedPaper) -> CompletenessResult:
-        """检查论文完整性"""
         result = CompletenessResult(student_name=paper.student_name)
-        deductions = []
 
-        # 1. 检查必要章节（40分）
-        section_score = self._check_sections(paper, result)
-        if section_score < 40:
-            deductions.append(40 - section_score)
+        # 累计各维度得分
+        dim_scores = {}
 
-        # 2. 检查字数（20分）
-        word_count_score = self._check_word_count(paper, result)
-        if word_count_score < 20:
-            deductions.append(20 - word_count_score)
+        # 1. 必要章节
+        section_score, section_warnings = self._check_sections(paper, result)
+        dim_scores["章节完整性"] = section_score
 
-        # 3. 检查参考文献（10分）
-        ref_score = self._check_references(paper, result)
-        if ref_score < 10:
-            deductions.append(10 - ref_score)
+        # 2. 字数
+        word_score, word_warnings = self._check_word_count(paper)
+        dim_scores["字数"] = word_score
+        result.warnings.extend(word_warnings)
 
-        # 4. 检查图表/截图（15分）
-        if self.require_figures:
-            figure_score = self._check_figures(paper, result)
-            if figure_score < 15:
-                deductions.append(15 - figure_score)
+        # 3. 参考文献
+        ref_score, ref_warnings = self._check_references(paper)
+        dim_scores["参考文献"] = ref_score
+        result.warnings.extend(ref_warnings)
 
-        # 5. 检查格式（15分）
-        format_score = self._check_format(paper, result)
+        # 4. 图表/截图
+        figure_score, figure_warnings = self._check_figures(paper)
+        dim_scores["图表"] = figure_score
+        result.warnings.extend(figure_warnings)
 
-        # 计算总分
-        total_deduction = sum(deductions)
-        result.score = max(0, 100 - total_deduction)
+        # 5. 格式
+        format_score, format_warnings = self._check_format(paper)
+        dim_scores["格式"] = format_score
+        result.warnings.extend(format_warnings)
+
+        result.dimension_scores = dim_scores
+
+        # 加权总分（各维度得分按其 weight 比例折算）
+        weights = {
+            "章节完整性": self.sections_weight,
+            "字数": self.word_count_weight,
+            "参考文献": self.references_weight,
+            "图表": self.figures_weight,
+            "格式": self.format_weight,
+        }
+        total_weight = sum(weights.values()) or 100
+        result.score = sum(
+            dim_scores.get(k, 0) * weights.get(k, 0) / total_weight
+            for k in dim_scores
+        )
+        result.score = max(0, min(100, round(result.score, 1)))
         result.is_complete = result.score >= 60 and len(result.missing_sections) <= 2
 
-        # 详细检查结果
         result.details = {
-            "字数": f"{paper.word_count}字（要求至少{self.min_word_count}字）",
+            "字数": f"{paper.word_count}字（要求至少{self.word_count_cfg.get('min', 3000)}字）",
             "段落数": paper.paragraph_count,
             "图片/截图数": paper.figure_count,
             "表格数": paper.table_count,
@@ -73,95 +94,93 @@ class CompletenessChecker:
 
         return result
 
-    def _check_sections(self, paper: ParsedPaper, result: CompletenessResult) -> float:
-        """检查必要章节，返回得分（40分）"""
+    def _check_sections(self, paper: ParsedPaper, result: CompletenessResult) -> tuple[float, list[str]]:
+        """检查必要章节，返回（得分, 警告列表）"""
         text = paper.raw_text
-        found_sections = []
-        missing_sections = []
+        warnings = []
 
-        # 用正则模糊匹配章节标题
-        section_patterns = {
-            "项目概述": [r"项?\s*目?\s*概?\s*述", r"第\s*1\s*[章节]"],
-            "功能实现": [r"功\s*能\s*实?\s*现", r"第\s*2\s*[章节]", r"主\s*要\s*功\s*能"],
-            "技术栈": [r"技\s*术\s*栈", r"第\s*3\s*[章节]", r"技\s*术?\s*选?\s*型?"],
-            "项目结构": [r"项?\s*目?\s*结?\s*构", r"第\s*4\s*[章节]"],
-            "代码实现": [r"代?\s*码?\s*实?\s*现", r"第\s*5\s*[章节]", r"核?\s*心?\s*代?\s*码"],
-            "项目演示截图": [r"演?\s*示?\s*截?\s*图", r"界?\s*面?\s*展?\s*示", r"第\s*6\s*[章节]", r"运?\s*行?\s*结?\s*果"],
-            "遇到的问题与解决方案": [r"遇?\s*到?\s*的?\s*问?\s*题", r"解?\s*决?\s*方?\s*案", r"第\s*7\s*[章节]"],
-            "总结与展望": [r"总?\s*结", r"展?\s*望", r"结?\s*语", r"第\s*8\s*[章节]"],
-        }
+        if not self.sections:
+            return 0, ["未配置章节检测规则"]
 
-        for section_name, patterns in section_patterns.items():
+        per_section_score = self.sections_weight / len(self.sections)
+        found_count = 0
+
+        for sec in self.sections:
+            name = sec.get("name", "")
+            patterns = sec.get("patterns", [name])
             found = False
-            for pattern in patterns:
-                if re.search(pattern, text, re.IGNORECASE):
+            for pat in patterns:
+                if re.search(pat, text, re.IGNORECASE):
                     found = True
                     break
             if found:
-                found_sections.append(section_name)
+                found_count += 1
             else:
-                missing_sections.append(section_name)
-                result.missing_sections.append(section_name)
+                result.missing_sections.append(name)
 
-        if missing_sections:
-            result.warnings.append(f"缺少章节：{', '.join(missing_sections)}")
+        if result.missing_sections:
+            warnings.append(f"缺少章节：{', '.join(result.missing_sections)}")
 
-        # 每个章节5分，共8个章节40分
-        score = len(found_sections) * 5
-        return score
+        return found_count * per_section_score, warnings
 
-    def _check_word_count(self, paper: ParsedPaper, result: CompletenessResult) -> float:
-        """检查字数（20分）"""
-        if paper.word_count >= self.min_word_count:
-            return 20.0
+    def _check_word_count(self, paper: ParsedPaper) -> tuple[float, list[str]]:
+        warnings = []
+        min_words = self.word_count_cfg.get("min", 3000)
+        if paper.word_count >= min_words:
+            return float(self.word_count_weight), warnings
 
-        ratio = paper.word_count / self.min_word_count
-        score = 20 * ratio
+        ratio = paper.word_count / min_words
+        score = self.word_count_weight * ratio
 
-        if paper.word_count < self.min_word_count * 0.5:
-            result.warnings.append(
-                f"字数严重不足：仅{paper.word_count}字，要求至少{self.min_word_count}字"
-            )
+        if paper.word_count < min_words * 0.5:
+            warnings.append(f"字数严重不足：仅{paper.word_count}字，要求至少{min_words}字")
         else:
-            result.warnings.append(
-                f"字数略少：{paper.word_count}字，建议达到{self.min_word_count}字"
-            )
+            warnings.append(f"字数略少：{paper.word_count}字，建议达到{min_words}字")
 
-        return score
+        return score, warnings
 
-    def _check_references(self, paper: ParsedPaper, result: CompletenessResult) -> float:
-        """检查参考文献（10分）"""
-        if self.min_references == 0:
-            return 10.0
-        if paper.reference_count >= self.min_references:
-            return 10.0
+    def _check_references(self, paper: ParsedPaper) -> tuple[float, list[str]]:
+        warnings = []
+        min_refs = self.references_cfg.get("min", 5)
+        if min_refs == 0:
+            return float(self.references_weight), warnings
+        if paper.reference_count >= min_refs:
+            return float(self.references_weight), warnings
         if paper.reference_count == 0:
-            return 0.0
-        return 10 * paper.reference_count / self.min_references
+            warnings.append("缺少参考文献")
+            return 0, warnings
+        score = self.references_weight * paper.reference_count / min_refs
+        warnings.append(f"参考文献偏少（{paper.reference_count}篇，要求至少{min_refs}篇）")
+        return score, warnings
 
-    def _check_figures(self, paper: ParsedPaper, result: CompletenessResult) -> float:
-        """检查图表/截图（15分）"""
-        if paper.figure_count >= 3:
-            return 15.0
+    def _check_figures(self, paper: ParsedPaper) -> tuple[float, list[str]]:
+        warnings = []
+        min_figs = self.figures_cfg.get("min", 3)
+        if min_figs == 0:
+            return float(self.figures_weight), warnings
+        if paper.figure_count >= min_figs:
+            return float(self.figures_weight), warnings
         if paper.figure_count > 0:
-            result.warnings.append(f"图片/截图数量偏少（{paper.figure_count}张），建议提供至少3张演示截图")
-            return 15 * paper.figure_count / 3
-        result.warnings.append("缺少项目演示截图")
-        return 0.0
+            warnings.append(f"图片/截图数量偏少（{paper.figure_count}张），建议提供至少{min_figs}张演示截图")
+            return self.figures_weight * paper.figure_count / min_figs, warnings
+        warnings.append("缺少项目演示截图")
+        return 0, warnings
 
-    def _check_format(self, paper: ParsedPaper, result: CompletenessResult) -> float:
-        """检查格式（15分）"""
-        score = 15.0
+    def _check_format(self, paper: ParsedPaper) -> tuple[float, list[str]]:
+        score = float(self.format_weight)
+        warnings = []
 
-        if paper.paragraph_count < 10:
-            result.warnings.append("段落数过少，可能存在格式问题")
-            score -= 5
+        min_paras = self.format_cfg.get("min_paragraphs", 10)
+        if paper.paragraph_count < min_paras:
+            warnings.append(f"段落数过少（{paper.paragraph_count}），可能存在格式问题")
+            score -= self.format_weight * 0.4
 
+        max_ratio = self.format_cfg.get("max_long_line_ratio", 0.3)
         if paper.raw_text:
             lines = paper.raw_text.split("\n")
-            very_long_lines = [l for l in lines if len(l) > 500]
-            if len(very_long_lines) > len(lines) * 0.3:
-                result.warnings.append("存在大量超长段落，可能为复制粘贴内容")
-                score -= 5
+            very_long = [l for l in lines if len(l) > 500]
+            if very_long and len(very_long) / max(1, len(lines)) > max_ratio:
+                warnings.append("存在大量超长段落，可能为复制粘贴内容")
+                score -= self.format_weight * 0.4
 
-        return max(0, score)
+        return max(0, score), warnings
