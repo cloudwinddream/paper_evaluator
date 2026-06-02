@@ -85,6 +85,12 @@ class App(Tk):
         )
         self.gen_btn.pack(side="left", padx=8)
 
+        self.stop_btn = ttk.Button(
+            btn_frame, text="■ 停止", command=self._stop_pipeline, width=10,
+            state="disabled"
+        )
+        self.stop_btn.pack(side="left", padx=8)
+
         self.status_label = ttk.Label(btn_frame, text="就绪", foreground="gray")
         self.status_label.pack(side="right", padx=8)
 
@@ -165,6 +171,7 @@ class App(Tk):
         self.provider_2_frame = ttk.Frame(parent)
         self.provider_2_frame.grid(row=row + 1, column=0, columnspan=3, sticky="ew",
                                    padx=(0, 0), pady=(2, 0))
+        self.provider_2_frame.columnconfigure(1, weight=1)
         if has_2:
             self._add_provider_fields(self.provider_2_frame, 0, 2, env)
         else:
@@ -290,16 +297,25 @@ class App(Tk):
     def _set_running(self, running: bool):
         self.running = running
         state = "disabled" if running else "normal"
+        stop_state = "normal" if running else "disabled"
         self.run_btn.config(state=state)
         self.gen_btn.config(state=state)
+        self.stop_btn.config(state=stop_state)
         self.status_label.config(text="运行中…" if running else "就绪", foreground="red" if running else "gray")
         if not running:
             self.status_label.config(text="完成", foreground="green")
 
+    def _stop_pipeline(self):
+        if self.process:
+            self._log("\n⏹ 用户终止\n")
+            self.process.kill()
+            self.process = None
+        self._set_running(False)
+
     def _on_close(self):
         if self.running and self.process:
             if messagebox.askyesno("确认", "评审正在进行，确定要终止吗？"):
-                self.process.kill()
+                self._stop_pipeline()
                 self.destroy()
             return
         self.destroy()
