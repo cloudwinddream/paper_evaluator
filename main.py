@@ -87,6 +87,11 @@ def main():
         action="store_true",
         help="强制重新生成评分标准（覆盖已有配置）"
     )
+    parser.add_argument(
+        "--skip-standards",
+        action="store_true",
+        help="跳过自动生成评分标准，使用已有配置文件"
+    )
     args = parser.parse_args()
 
     print("=" * 60)
@@ -117,49 +122,47 @@ def main():
         "max_tokens": 4096,
     }
 
-    # 判断是否需要生成评分标准
+    # 判断是否跳过自动生成评分标准
     config_path = Path(args.config)
-    need_generate = (
-        args.generate_standards
-        or args.force_standards
-        or not config_path.exists()
-    )
 
-    if need_generate:
-        if args.generate_standards and not args.force_standards and config_path.exists():
-            # 仅生成模式：生成后退出
-            print("\n[生成评分标准] 正在分析题目要求...")
-            generator = StandardsGenerator(api_config)
-            result = generator.generate_and_save(requirements_text, args.config)
-            if result.success:
-                print("\n  ✓ 评分标准生成完成！")
-                print(f"  维度: {', '.join(d['name'] for d in result.dimensions)}")
-                print(f"  章节: {', '.join(result.sections)}")
-                print(f"  最少字数: {result.min_word_count}")
-                print(f"\n  已保存至 {args.config}，请检查后重新运行评审。")
-            else:
-                print(f"\n  ✗ 生成失败: {result.error_message}")
-            return
+    if args.generate_standards and not args.force_standards and config_path.exists():
+        # 仅生成模式：生成后退出
+        print("\n[生成评分标准] 正在分析题目要求...")
+        generator = StandardsGenerator(api_config)
+        result = generator.generate_and_save(requirements_text, args.config)
+        if result.success:
+            print("\n  ✓ 评分标准生成完成！")
+            print(f"  维度: {', '.join(d['name'] for d in result.dimensions)}")
+            print(f"  章节: {', '.join(result.sections)}")
+            print(f"  最少字数: {result.min_word_count}")
+            print(f"\n  已保存至 {args.config}，请检查后重新运行评审。")
+        else:
+            print(f"\n  ✗ 生成失败: {result.error_message}")
+        return
 
-        # 强制重新生成或配置文件不存在
+    if not args.skip_standards:
         if args.force_standards:
             print("\n[生成评分标准] 强制重新生成...")
         else:
-            print("\n[生成评分标准] 未找到配置文件，自动生成...")
+            print("\n[生成评分标准] 根据题目要求自动生成...")
 
         generator = StandardsGenerator(api_config)
         result = generator.generate_and_save(requirements_text, args.config)
         if result.success:
             print("  ✓ 评分标准已生成")
-            print(f"  维度: {', '.join(d['name'] for d in result.dimensions)}")
-            for d in result.dimensions:
-                print(f"    - {d['name']}（{d['weight']*100:.0f}%）：{d['description']}")
-            print(f"  必要章节: {', '.join(result.sections)}")
+            if result.dimensions:
+                print(f"  维度: {', '.join(d['name'] for d in result.dimensions)}")
+                for d in result.dimensions:
+                    print(f"    - {d['name']}（{d['weight']*100:.0f}%）：{d['description']}")
+            if result.sections:
+                print(f"  必要章节: {', '.join(result.sections)}")
             print(f"  最少字数: {result.min_word_count}")
         else:
             print(f"  ✗ 生成失败: {result.error_message}")
             print("  将使用默认评分标准...")
             args.config = None
+    else:
+        print("  使用已有评分标准配置")
 
     # ── 加载评分标准 ──
     if args.config and Path(args.config).exists():
