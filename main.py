@@ -262,11 +262,18 @@ def main():
     plagiarism_results = []
     if args.plagiarism:
         print("\n[5/6] 查重检测...")
-        plagiarism_checker = PlagiarismChecker({
-            "similarity_threshold": 0.3,
-            "min_match_length": 20,
-            "ngram_size": 5,
-        })
+        plagiarism_checker = PlagiarismChecker(
+            config={
+                "suspect_threshold": 0.4,
+                "high_threshold": 0.6,
+                "min_match_length": 30,
+                "char_ngram_size": 8,
+                "word_ngram_size": 3,
+                "minhash_hashes": 128,
+                "ai_check": True,
+            },
+            llm_client=llm_client,
+        )
         plagiarism_results = plagiarism_checker.check_all(papers)
 
         plag_summary = plagiarism_checker.get_plagiarism_summary(plagiarism_results)
@@ -274,6 +281,14 @@ def main():
             print(f"  ⚠ 发现 {plag_summary['suspected_plagiarism_count']} 对疑似抄袭:")
             for case in plag_summary["details"]:
                 print(f"    - {case['student']} ↔ {case['similar_to']} ({case['similarity']:.0%})")
+            # 输出级别详情
+            for r in plagiarism_results:
+                for pair in r.suspicious_pairs:
+                    other = pair.student_b if pair.student_a == r.student_name else pair.student_a
+                    if pair.severity == "高度疑似":
+                        print(f"    🔴 {r.student_name} ↔ {other}: {pair.similarity:.0%}（{pair.severity}）")
+                    elif pair.severity == "疑似":
+                        print(f"    🟡 {r.student_name} ↔ {other}: {pair.similarity:.0%}（{pair.severity}）")
         else:
             print("  ✓ 未发现明显抄袭")
     else:

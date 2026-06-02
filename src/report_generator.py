@@ -91,7 +91,7 @@ class ReportGenerator:
                 final_score = comp.score * 0.2 + eval_.total_score * 0.8
                 if aigc and aigc.is_suspicious:
                     final_score *= (1 - aigc.ai_probability * 0.3)
-                if plag and plag.highest_similarity > 0.3:
+                if plag and plag.suspicious_pairs:
                     final_score *= (1 - plag.highest_similarity * 0.2)
                 final_score = min(89, max(60, round(final_score)))
             elif comp and not eval_:
@@ -359,7 +359,7 @@ class ReportGenerator:
                 final_score = comp.score * 0.2 + eval_.total_score * 0.8
                 if aigc and aigc.is_suspicious:
                     final_score *= (1 - aigc.ai_probability * 0.3)
-                if plag and plag.highest_similarity > 0.3:
+                if plag and plag.suspicious_pairs:
                     final_score *= (1 - plag.highest_similarity * 0.2)
                 final_score = min(89, max(60, round(final_score)))
             elif comp and not eval_:

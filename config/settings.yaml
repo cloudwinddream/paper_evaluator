@@ -15,6 +15,10 @@ aigc_detection:
 # 查重配置
 plagiarism:
   enabled: true
-  similarity_threshold: 0.3
-  min_match_length: 20
-  ngram_size: 5
+  suspect_threshold: 0.4         # 疑似阈值
+  high_threshold: 0.6            # 高度疑似阈值
+  min_match_length: 30           # 最小匹配长度（字符）
+  char_ngram_size: 8             # 字符 n-gram 大小
+  word_ngram_size: 3             # 词级 n-gram 大小
+  minhash_hashes: 128            # MinHash 签名数
+  ai_check: true                 # 是否启用 AI 辅助判断
