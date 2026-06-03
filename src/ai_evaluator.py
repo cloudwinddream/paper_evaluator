@@ -133,13 +133,14 @@ class AIEvaluator:
             for d in dimensions
         )
 
-        kwargs = {
-            "requirements": requirements,
-            "dimensions": dim_desc,
-            "score_min": str(self.score_min),
-            "score_max": str(self.score_max),
-        }
-        return template.format(**kwargs)
+        safe_req = requirements.replace("{", "{{").replace("}", "}}")
+        safe_dim = dim_desc.replace("{", "{{").replace("}", "}}")
+        template = template.replace("{requirements}", safe_req, 1)
+        template = template.replace("{dimensions}", safe_dim, 1)
+        return template.format(
+            score_min=str(self.score_min),
+            score_max=str(self.score_max),
+        )
 
     def _parse_response(self, response: str, dimensions: list[dict]) -> dict:
         """解析API响应"""

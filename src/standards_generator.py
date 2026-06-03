@@ -103,7 +103,7 @@ class StandardsGenerator:
         if not template:
             template = _load_prompt("standards_generation.txt")
         if not template:
-            template = f"""你是一位资深的课程设计指导教师。请严格根据以下题目要求，制定一套完整的评审方案。
+            template = """你是一位资深的课程设计指导教师。请严格根据以下题目要求，制定一套完整的评审方案。
 
 ## 题目要求
 {requirements}
@@ -145,7 +145,8 @@ class StandardsGenerator:
 
 注意：课程设计报告不要求参考文献，不要包含 references 相关字段。"""
 
-        return template.format(requirements=requirements)
+        safe_req = requirements.replace("{", "{{").replace("}", "}}")
+        return template.replace("{requirements}", safe_req, 1).format()
 
     def _parse_response(self, response: str) -> dict:
         json_str = response

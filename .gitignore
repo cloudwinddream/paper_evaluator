@@ -34,6 +34,7 @@ outputs/
 !README.md
 !config/requirements.yaml
 !config/settings.yaml
+!config/prompts/*.md
 
 # 测试文件
 test_papers/
