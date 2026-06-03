@@ -122,6 +122,9 @@ python main.py --force-standards
 ```
 覆盖已有配置重新生成。
 
+### 容错处理
+若 LLM 返回的 JSON 中 `dimensions` 或 `sections` 字段为字符串列表而非对象列表（如 `["功能完整性", "技术能力"]`），系统会自动将其转换为标准对象格式，避免 `'str' object has no attribute 'get'` 错误。
+
 ## 完整性评分
 
 完整性检测按 AI 生成的规则加权计分：

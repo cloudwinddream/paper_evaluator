@@ -171,7 +171,13 @@ class StandardsGenerator:
             data = json.loads(json_str)
 
         # 处理评分维度
-        dimensions = data.get("dimensions", [])
+        raw_dims = data.get("dimensions", [])
+        dimensions = []
+        for d in raw_dims:
+            if isinstance(d, str):
+                dimensions.append({"name": d, "weight": 0.2, "description": d})
+            elif isinstance(d, dict):
+                dimensions.append(d)
         if dimensions:
             total_weight = sum(d.get("weight", 0) for d in dimensions)
             if abs(total_weight - 1.0) > 0.01:
@@ -192,6 +198,13 @@ class StandardsGenerator:
         completeness.setdefault("format_weight", 15)
 
         sections = completeness.get("sections", [])
+        if sections and isinstance(sections[0], str):
+            # 将字符串列表转换为 dict 列表
+            completeness["sections"] = [
+                {"name": s, "patterns": [s], "weight": 0}
+                for s in sections
+            ]
+            sections = completeness["sections"]
         if not sections:
             # 向后兼容：从旧版 sections 列表转换
             old_sections = data.get("sections", [])
