@@ -182,7 +182,7 @@ clamp(final_score, score_min, score_max)
 - **查重扣减**：检测到抄袭时，按相似度最高扣减 20%
 
 ### Prompt 模板
-评审提示词存放在 `config/prompts/` 目录（.md 格式），从文件动态加载，修改无需改动代码：
+评审提示词存放在 `config/prompts/` 目录（.md 格式，已纳入版本管理），从文件动态加载，修改无需改动代码：
 
 - `evaluation_system.md` — AI 评审系统提示词，含 `{score_min}`/`{score_max}` 占位符
 - `standards_generation.md` — 评分标准生成提示词
