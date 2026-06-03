@@ -23,9 +23,11 @@ from src.plagiarism_checker import PlagiarismResult
 class ReportGenerator:
     """报告生成器"""
 
-    def __init__(self, output_dir: str):
+    def __init__(self, output_dir: str, score_min: int = 60, score_max: int = 89):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.score_min = score_min
+        self.score_max = score_max
 
     # ──────────────────────────────────────────────
     # Excel 汇总表
@@ -85,7 +87,7 @@ class ReportGenerator:
             aigc = aigc_map.get(paper.student_name)
             plag = plagiarism_map.get(paper.student_name)
 
-            # 最终得分（强制 60-89）
+            # 最终得分
             final_score = 0
             if comp and eval_ and eval_.success:
                 final_score = comp.score * 0.2 + eval_.total_score * 0.8
@@ -93,9 +95,9 @@ class ReportGenerator:
                     final_score *= (1 - aigc.ai_probability * 0.3)
                 if plag and plag.suspicious_pairs:
                     final_score *= (1 - plag.highest_similarity * 0.2)
-                final_score = min(89, max(60, round(final_score)))
+                final_score = min(self.score_max, max(self.score_min, round(final_score)))
             elif comp and not eval_:
-                final_score = min(89, max(60, round(comp.score)))
+                final_score = min(self.score_max, max(self.score_min, round(comp.score)))
 
             # 查重警告
             plag_warning = ""
@@ -361,9 +363,9 @@ class ReportGenerator:
                     final_score *= (1 - aigc.ai_probability * 0.3)
                 if plag and plag.suspicious_pairs:
                     final_score *= (1 - plag.highest_similarity * 0.2)
-                final_score = min(89, max(60, round(final_score)))
+                final_score = min(self.score_max, max(self.score_min, round(final_score)))
             elif comp and not eval_:
-                final_score = min(89, max(60, round(comp.score)))
+                final_score = min(self.score_max, max(self.score_min, round(comp.score)))
 
             dim_scores = [str(eval_.dimension_scores.get(dn, "-")) if eval_ and eval_.success else "-" for dn in dim_names]
             row = [

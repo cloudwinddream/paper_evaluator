@@ -7,10 +7,21 @@ import json
 import re
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 from src.llm_client import LLMClient
 from src.paper_parser import ParsedPaper
+
+PROMPT_DIR = Path(__file__).resolve().parent.parent / "config" / "prompts"
+
+
+def _load_prompt(name: str) -> str:
+    """从 config/prompts/ 加载 prompt 模板文件，不存在则返回空字符串"""
+    path = PROMPT_DIR / name
+    if path.exists():
+        return path.read_text(encoding="utf-8")
+    return ""
 
 
 @dataclass
@@ -29,8 +40,10 @@ class EvaluationResult:
 class AIEvaluator:
     """AI论文评审器"""
 
-    def __init__(self, llm_client: LLMClient):
+    def __init__(self, llm_client: LLMClient, score_min: int = 60, score_max: int = 89):
         self.llm = llm_client
+        self.score_min = score_min
+        self.score_max = score_max
 
     def evaluate(
         self,
@@ -79,34 +92,26 @@ class AIEvaluator:
         evaluation_criteria: str,
         dimensions: list[dict],
     ) -> str:
-        """构建评审prompt"""
-        dim_desc = "\n".join(
-            f"- {d['name']}（权重{d['weight']*100:.0f}%）：{d['description']}"
-            for d in dimensions
-        )
-
-        prompt = f"""你是一位严格的课程设计报告评审专家。请根据以下题目要求，评审学生的项目报告。
+        """构建评审prompt：从模板文件加载 + 填充变量"""
+        template = _load_prompt("evaluation_system.md")
+        if not template:
+            template = _load_prompt("evaluation_system.txt")
+        if not template:
+            template = """你是一位严格的课程设计报告评审专家。请根据以下题目要求，评审学生的项目报告。
 
 ## 课程设计要求
 {requirements}
 
 ## 参考评分维度
-以下维度供参考，请根据课程设计的具体类型和要求，自行判断每个维度的实际考察重点，并在评分依据中说明：
-{dim_desc}
+{dimensions}
 
 ## 评审要求
-1. **严格对照题目要求**进行评审，根据课程设计的类型（管理系统、网站、算法、数据分析等）判断评审重点
-2. 所有维度的分数及综合总分必须在 **60分 ~ 89分** 之间（60分及格，89分封顶），只输出整数
-3. 计算加权总分（四舍五入取整），总分同样必须在60-89之间
-4. 提供详细的评分依据，说明每个维度扣分或得分的原因，并引用学生报告中的具体内容
-5. 给出简短评语（20字以内），包含3-5个关键词，指出主要优缺点
-6. 如果学生报告中缺少题目要求的必要章节或内容，应在对应维度中扣分
-
-## 评分参考标准
-- 优秀（80-89）：完全满足题目要求，内容充实，逻辑清晰，有独立见解
-- 良好（70-79）：基本满足题目要求，内容较完整，有少量不足
-- 及格（60-69）：部分满足题目要求，但存在明显不足或缺失
-- 不及格（<60）：不设置，所有分数必须在60-89之间
+1. 严格对照题目要求进行评审
+2. 所有维度的分数及综合总分必须在 **{score_min}分 ~ {score_max}分** 之间
+3. 计算加权总分（四舍五入取整）
+4. 提供详细的评分依据
+5. 给出简短评语（20字以内），包含3-5个关键词
+6. 对于课程设计报告，不要求参考文献，不因缺少文献扣分
 
 ## 输出格式（严格JSON格式）
 ```json
@@ -116,14 +121,25 @@ class AIEvaluator:
         "维度2名称": 整数分数
     }},
     "total_score": 整数综合总分,
-    "evaluation_basis": "详细的评分依据，包含对各维度得分原因的分析...",
+    "evaluation_basis": "详细的评分依据...",
     "short_comment": "关键词1 关键词2 关键词3..."
 }}
 ```
 
-重要：所有分数（含各维度分和总分）必须在60到89之间，超出范围视为无效。请直接输出JSON。"""
+重要：所有分数必须在{score_min}到{score_max}之间，超出范围视为无效。请直接输出JSON。"""
 
-        return prompt
+        dim_desc = "\n".join(
+            f"- {d['name']}（权重{d['weight']*100:.0f}%）：{d['description']}"
+            for d in dimensions
+        )
+
+        kwargs = {
+            "requirements": requirements,
+            "dimensions": dim_desc,
+            "score_min": str(self.score_min),
+            "score_max": str(self.score_max),
+        }
+        return template.format(**kwargs)
 
     def _parse_response(self, response: str, dimensions: list[dict]) -> dict:
         """解析API响应"""
@@ -154,16 +170,16 @@ class AIEvaluator:
         for dim in dimensions:
             dim_name = dim["name"]
             score = dim_scores.get(dim_name, 0)
-            result["dimension_scores"][dim_name] = min(89, max(60, round(float(score))))
+            result["dimension_scores"][dim_name] = min(self.score_max, max(self.score_min, round(float(score))))
 
         if result["dimension_scores"]:
             total = sum(
                 result["dimension_scores"].get(d["name"], 0) * d["weight"]
                 for d in dimensions
             )
-            result["total_score"] = min(89, max(60, round(total)))
+            result["total_score"] = min(self.score_max, max(self.score_min, round(total)))
         else:
-            result["total_score"] = min(89, max(60, round(float(data.get("total_score", 0)))))
+            result["total_score"] = min(self.score_max, max(self.score_min, round(float(data.get("total_score", 0)))))
 
         result["evaluation_basis"] = data.get("evaluation_basis", "未提供评分依据")
         result["short_comment"] = data.get("short_comment", "无评语")
@@ -183,11 +199,11 @@ class AIEvaluator:
             pattern = rf"{dim['name']}[：:]\s*(\d+)"
             match = re.search(pattern, text)
             if match:
-                result["dimension_scores"][dim["name"]] = min(89, max(60, round(float(match.group(1)))))
+                result["dimension_scores"][dim["name"]] = min(self.score_max, max(self.score_min, round(float(match.group(1)))))
 
         total_match = re.search(r"总[分得分][：:]\s*(\d+)", text)
         if total_match:
-            result["total_score"] = min(89, max(60, round(float(total_match.group(1)))))
+            result["total_score"] = min(self.score_max, max(self.score_min, round(float(total_match.group(1)))))
 
         return result
 

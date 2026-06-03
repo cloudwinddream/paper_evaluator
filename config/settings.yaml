@@ -1,6 +1,11 @@
 # 论文评审系统配置文件（非敏感配置）
 # API密钥和路径等请通过 .env 文件配置
 
+# 分数范围（默认 60-89）
+score_range:
+  min: 60
+  max: 89
+
 # AI评审参数
 ai_evaluation:
   temperature: 0.3

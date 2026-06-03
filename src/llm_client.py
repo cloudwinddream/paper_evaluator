@@ -72,35 +72,35 @@ class LLMClient:
                 resp = requests.post(url, headers=headers, json=payload, timeout=180)
             except requests.exceptions.Timeout:
                 last_error = f"[{provider['model']}] 请求超时"
-                print(f"  ⚠ {last_error}，切换下一个...")
+                print(f"  \u26a0 {last_error}，切换下一个...")
                 self._switch_provider()
                 continue
             except requests.exceptions.ConnectionError:
                 last_error = f"[{provider['model']}] 连接失败"
-                print(f"  ⚠ {last_error}，切换下一个...")
+                print(f"  \u26a0 {last_error}，切换下一个...")
                 self._switch_provider()
                 continue
             except requests.exceptions.RequestException as e:
                 last_error = f"[{provider['model']}] 网络错误: {e}"
-                print(f"  ⚠ {last_error}，切换下一个...")
+                print(f"  \u26a0 {last_error}，切换下一个...")
                 self._switch_provider()
                 continue
 
             if resp.status_code == 429:
                 last_error = f"[{provider['model']}] 触发限流"
-                print(f"  ⚠ {last_error}，切换下一个...")
+                print(f"  \u26a0 {last_error}，切换下一个...")
                 self._switch_provider()
                 continue
 
             if resp.status_code == 401:
                 last_error = f"[{provider['model']}] 鉴权失败（API Key 无效）"
-                print(f"  ⚠ {last_error}，切换下一个...")
+                print(f"  \u26a0 {last_error}，切换下一个...")
                 self._switch_provider()
                 continue
 
             if _is_token_limit_error(resp):
                 last_error = f"[{provider['model']}] Token 超限"
-                print(f"  ⚠ {last_error}，切换下一个...")
+                print(f"  \u26a0 {last_error}，切换下一个...")
                 self._switch_provider()
                 continue
 
@@ -110,7 +110,7 @@ class LLMClient:
                 except Exception:
                     detail = resp.text[:200]
                 last_error = f"[{provider['model']}] HTTP {resp.status_code}: {detail}"
-                print(f"  ⚠ {last_error}，切换下一个...")
+                print(f"  \u26a0 {last_error}，切换下一个...")
                 self._switch_provider()
                 continue
 
@@ -118,7 +118,7 @@ class LLMClient:
                 return resp.json()["choices"][0]["message"]["content"]
             except (KeyError, IndexError, json.JSONDecodeError) as e:
                 last_error = f"[{provider['model']}] 响应解析失败: {e}"
-                print(f"  ⚠ {last_error}，切换下一个...")
+                print(f"  \u26a0 {last_error}，切换下一个...")
                 self._switch_provider()
                 continue
 
@@ -128,4 +128,4 @@ class LLMClient:
         """切换到下一个 provider"""
         self.current_idx = (self.current_idx + 1) % len(self.providers)
         p = self.providers[self.current_idx]
-        print(f"  → 切换到 {p['model']} ({p['base_url']})")
+        print(f"  \u2192 切换到 {p['model']} ({p['base_url']})")

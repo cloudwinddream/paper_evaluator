@@ -4,14 +4,15 @@
 
 ## 功能
 
-1. **智能标准生成** — 每次运行自动将题目要求传给大模型，动态推断评分维度、权重、完整性规则（必要章节/字数/参考文献/图表/格式）
-2. **完整性检测** — 按 AI 生成的规则检查章节完整性、字数、参考文献、图表、格式，加权计分
-3. **AI 智能评审** — 调用 OpenAI 兼容 API 多维度评分（60-89 分），提供评分依据和评语
+1. **智能标准生成** — 每次运行自动将题目要求传给大模型，动态推断评分维度、权重、完整性规则（必要章节/字数/图表/格式）
+2. **完整性检测** — 按 AI 生成的规则检查章节完整性、字数、图表、格式，扣分制计分（满分 100，保底 60）
+3. **AI 智能评审** — 调用 OpenAI 兼容 API 多维度评分，提供评分依据和评语（分数范围可配置，默认 60-89）
 4. **AIGC 检测** — 检测 AI 生成内容和可疑段落
 5. **查重检测** — 学生报告两两比对（默认关闭，需 `--plagiarism` 开启），含模板过滤/中文分词/MinHash指纹/AI辅助判断
 6. **报告生成** — 自动生成 Excel 汇总表、Word 详细报告和 Markdown 评审报告
 7. **支持 .doc** — 兼容旧版 Word 格式（自动转换修复）
 8. **多 Provider 自动容灾** — 配置多个 API Provider，遇限流(429)/鉴权失败/token超限/网络故障时自动切换
+9. **可配置分数范围** — 通过 `config/settings.yaml` 或 CLI 参数 `--score-min`/`--score-max` 自定义最低/最高分
 
 ## 快速开始
 
@@ -77,6 +78,9 @@ python main.py --skip-ai
 
 # 启用查重检测
 python main.py --plagiarism
+
+# 自定义分数范围
+python main.py --score-min 50 --score-max 95
 ```
 
 **本地图形界面：**
@@ -84,7 +88,7 @@ python main.py --plagiarism
 python gui.py
 ```
 
-图形界面提供路径浏览、LLM 配置（地址/密钥/模型，密钥可切换显示）、选项勾选（跳过 AI/查重/跳过生成等）、运行/停止按钮、实时日志显示，配置自动保存到 `.env`。
+图形界面提供路径浏览、LLM 配置（地址/密钥/模型，密钥可切换显示）、Provider 互换、分数范围自定义、选项勾选（跳过 AI/查重/跳过生成等）、运行/停止按钮、实时日志显示，配置自动保存到 `.env`。
 
 ## 参数说明
 
@@ -99,6 +103,8 @@ python gui.py
 | `--skip-standards` | 跳过 AI 自动生成评分标准，使用已有配置文件 |
 | `--generate-standards, -g` | 仅生成评分标准后退出 |
 | `--force-standards` | 强制重新生成评分标准 |
+| `--score-min` | 最低分数（默认从 settings.yaml 读取，兜底 60） |
+| `--score-max` | 最高分数（默认从 settings.yaml 读取，兜底 89） |
 
 ## 标准生成与加载机制
 
@@ -106,7 +112,7 @@ python gui.py
 每次运行（不传 `--skip-standards`）自动将题目要求发给大模型，输出包含两部分的 JSON：
 
 1. **评分维度**（dimensions）：4-6 个维度，含名称、权重、详细评分说明
-2. **完整性规则**（completeness）：必要章节检测正则、字数下限、参考文献下限、图片下限、格式要求，以及各部分分值权重
+2. **完整性规则**（completeness）：必要章节检测正则、字数下限、图表下限、格式要求，以及各部分分值权重
 
 生成结果保存至 `config/requirements.yaml`，AI 评审和完整性检测均读取该文件执行。
 
@@ -127,17 +133,61 @@ python main.py --force-standards
 
 ## 完整性评分
 
-完整性检测按 AI 生成的规则加权计分：
+完整性检测按 AI 生成的规则以**扣分制**计分：
+
+- 各检查项从满分开始，每缺一项按项权重扣分
+- 所有维度得分求和后归一化到百分制
+- 最终完整性得分**最低 60 分**（保底），最高 100 分
 
 | 检查项 | 权重（AI 动态分配） | 说明 |
 |--------|---------------------|------|
-| 必要章节 | ~40% | 检测各章节是否存在（AI 提供模糊正则） |
-| 字数 | ~20% | 是否达到最低字数要求 |
-| 参考文献 | ~10% | 参考文献数量是否达标 |
-| 图表/截图 | ~15% | 演示截图数量是否充足 |
-| 格式 | ~15% | 段落数、超长行占比等 |
+| 必要章节 | ~40% | 检测各章节是否存在（AI 提供模糊正则），每缺一章按章节权重扣分 |
+| 字数 | ~25% | 是否达到最低字数要求，按比例扣分 |
+| 图表/截图 | ~15% | 演示截图数量是否充足，按比例扣分 |
+| 格式 | ~10% | 段落数、超长行占比等 |
 
-各检查项权重由 AI 根据项目类型动态分配（如算法设计项目可能降低图表权重，提高代码质量权重）。
+各检查项权重由 AI 根据项目类型动态分配。
+
+## 评分机制
+
+### 分数范围
+所有分数默认在 **60-89 分**之间，可通过以下方式自定义：
+
+1. **`config/settings.yaml`** — 全局默认配置
+   ```yaml
+   score_range:
+     min: 60
+     max: 89
+   ```
+2. **CLI 参数** — 覆盖 settings.yaml
+   ```bash
+   python main.py --score-min 50 --score-max 95
+   ```
+3. **GUI 界面** — 在配置面板直接输入最低/最高分
+
+优先级：**CLI 参数 > settings.yaml > 代码默认（60-89）**
+
+### 最终得分公式
+
+```python
+final_score = completeness × 0.2 + total_score × 0.8
+if AIGC 可疑:  final_score *= (1 - ai_probability × 0.3)    # 最高扣 30%
+if 查重有风险: final_score *= (1 - highest_similarity × 0.2) # 最高扣 20%
+clamp(final_score, score_min, score_max)
+```
+
+- **completeness**：完整性检测得分（扣分制，保底 60）
+- **total_score**：AI 多维度评审加权总分
+- **AIGC 扣减**：检测到 AI 生成内容时，按概率最高扣减 30%
+- **查重扣减**：检测到抄袭时，按相似度最高扣减 20%
+
+### Prompt 模板
+评审提示词存放在 `config/prompts/` 目录（.md 格式），从文件动态加载，修改无需改动代码：
+
+- `evaluation_system.md` — AI 评审系统提示词，含 `{score_min}`/`{score_max}` 占位符
+- `standards_generation.md` — 评分标准生成提示词
+- `standards_system.md` — 标准生成系统提示词
+- `plagiarism_system.md` — AI 辅助查重判断提示词
 
 ## 查重检测（`--plagiarism`）
 
@@ -151,20 +201,13 @@ python main.py --force-standards
 ## API 多 Provider 自动容灾
 
 可配置多个 API Provider（`API_*_2`、`API_*_3`……），按顺序优先使用第一个，遇以下情况立即切换到下一个：
+
 - **429 限流** — 直接切换，不等待重试
 - **401 鉴权失败** — API Key 无效时跳过
 - **Token 超限** — 上下文过长时自动切换
 - **网络超时/连接失败** — 网络故障时自动跳转
 
 系统会遍历所有 Provider，直到成功返回结果；若全部失败则报错。
-
-## 评分机制
-
-- 每次运行自动调用 AI 分析题目要求，动态生成评分维度和完整性规则
-- 各维度分、综合总分、最终得分均控制 **60-89 分** 之间
-- 评分依据引用学生报告具体内容
-- 完整性检测和 AI 评审均基于同一份 AI 生成的标准
-- 可使用 `--skip-standards` 固定已生成的标准
 
 ## 输出文件
 
@@ -181,7 +224,8 @@ python main.py --force-standards
 | 功能 | 说明 |
 |------|------|
 | 路径配置 | 论文文件夹、题目要求文档、输出目录、评分标准文件，均带浏览按钮 |
-| LLM 配置 | API 地址 / 密钥（可切换显示） / 模型，支持第二 Provider 备用 |
+| LLM 配置 | API 地址 / 密钥（可切换显示） / 模型，支持第二 Provider 备用，带 ⇅ 互换按钮 |
+| 分数范围 | 自定义最低/最高分（默认 60-89），立即生效 |
 | 选项勾选 | 跳过 AI 评审、启用查重、使用已有标准、强制重新生成 |
 | 运行控制 | ▶ 开始评审 / 仅生成标准 / ■ 停止 |
 | 实时日志 | 深色终端风格文本框，子进程输出逐行显示 |
@@ -195,12 +239,13 @@ python main.py --force-standards
 paper_evaluator/
 ├── config/
 │   ├── requirements.yaml      # 评分标准（自动生成或手动编辑）
-│   └── settings.yaml          # 非敏感系统配置
+│   ├── settings.yaml          # 非敏感系统配置（含分数范围）
+│   └── prompts/               # LLM prompt 模板（.md 格式）
 ├── src/
 │   ├── paper_parser.py        # Word 文档解析（支持 .doc / .docx）
-│   ├── completeness_checker.py # 完整性检测（规则由 AI 动态生成）
+│   ├── completeness_checker.py # 完整性检测（扣分制，保底 60）
 │   ├── llm_client.py          # 多 Provider LLM 客户端（自动容灾）
-│   ├── ai_evaluator.py        # AI 评审（60-89 分范围）
+│   ├── ai_evaluator.py        # AI 评审（可配置分数范围）
 │   ├── aigc_detector.py       # AIGC 检测
 │   ├── plagiarism_checker.py  # 查重检测（MinHash/中文分词/AI辅助）
 │   ├── standards_generator.py # 智能标准生成（评分+完整性规则）

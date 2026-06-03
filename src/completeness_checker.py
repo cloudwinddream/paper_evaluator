@@ -17,59 +17,51 @@ class CompletenessResult:
     missing_sections: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     details: dict = field(default_factory=dict)
-    dimension_scores: dict = field(default_factory=dict)   # 各维度得分明细
+    dimension_scores: dict = field(default_factory=dict)
 
 
 class CompletenessChecker:
     """论文完整性检查器（规则由 AI 动态生成）"""
 
     def __init__(self, config: dict):
-        # 从 requirements.yaml 的 completeness 字段加载规则
         self.sections = config.get("sections", [])
-        self.word_count_cfg = config.get("word_count", {"min": 3000, "weight": 20})
-        self.references_cfg = config.get("references", {"min": 5, "weight": 10})
+        self.word_count_cfg = config.get("word_count", {"min": 2000, "weight": 30})
+        self.references_cfg = config.get("references", {"min": 0, "weight": 0})
         self.figures_cfg = config.get("figures", {"min": 3, "weight": 15})
         self.format_cfg = config.get("format", {"min_paragraphs": 10, "max_long_line_ratio": 0.3, "weight": 15})
 
         self.sections_weight = config.get("sections_weight", 40)
-        self.word_count_weight = self.word_count_cfg.get("weight", 20)
-        self.references_weight = self.references_cfg.get("weight", 10)
+        self.word_count_weight = self.word_count_cfg.get("weight", 30)
+        self.references_weight = self.references_cfg.get("weight", 0)
         self.figures_weight = self.figures_cfg.get("weight", 15)
         self.format_weight = self.format_cfg.get("weight", 15)
 
     def check(self, paper: ParsedPaper) -> CompletenessResult:
         result = CompletenessResult(student_name=paper.student_name)
 
-        # 累计各维度得分
         dim_scores = {}
 
-        # 1. 必要章节
         section_score, section_warnings = self._check_sections(paper, result)
         dim_scores["章节完整性"] = section_score
 
-        # 2. 字数
         word_score, word_warnings = self._check_word_count(paper)
         dim_scores["字数"] = word_score
         result.warnings.extend(word_warnings)
 
-        # 3. 参考文献
         ref_score, ref_warnings = self._check_references(paper)
         dim_scores["参考文献"] = ref_score
         result.warnings.extend(ref_warnings)
 
-        # 4. 图表/截图
         figure_score, figure_warnings = self._check_figures(paper)
         dim_scores["图表"] = figure_score
         result.warnings.extend(figure_warnings)
 
-        # 5. 格式
         format_score, format_warnings = self._check_format(paper)
         dim_scores["格式"] = format_score
         result.warnings.extend(format_warnings)
 
         result.dimension_scores = dim_scores
 
-        # 加权总分（各维度得分按其 weight 比例折算）
         weights = {
             "章节完整性": self.sections_weight,
             "字数": self.word_count_weight,
@@ -78,15 +70,13 @@ class CompletenessChecker:
             "格式": self.format_weight,
         }
         total_weight = sum(weights.values()) or 100
-        result.score = sum(
-            dim_scores.get(k, 0) * weights.get(k, 0) / total_weight
-            for k in dim_scores
-        )
-        result.score = max(0, min(100, round(result.score, 1)))
+        result.score = sum(dim_scores.get(k, 0) for k in dim_scores)
+        result.score = result.score * 100 / total_weight
+        result.score = max(60, min(100, round(result.score, 1)))
         result.is_complete = result.score >= 60 and len(result.missing_sections) <= 2
 
         result.details = {
-            "字数": f"{paper.word_count}字（要求至少{self.word_count_cfg.get('min', 3000)}字）",
+            "字数": f"{paper.word_count}字（要求至少{self.word_count_cfg.get('min', 2000)}字）",
             "段落数": paper.paragraph_count,
             "图片/截图数": paper.figure_count,
             "表格数": paper.table_count,
@@ -95,15 +85,14 @@ class CompletenessChecker:
         return result
 
     def _check_sections(self, paper: ParsedPaper, result: CompletenessResult) -> tuple[float, list[str]]:
-        """检查必要章节，返回（得分, 警告列表）"""
         text = paper.raw_text
         warnings = []
 
         if not self.sections:
             return 0, ["未配置章节检测规则"]
 
-        per_section_score = self.sections_weight / len(self.sections)
-        found_count = 0
+        total_weight = sum(sec.get("weight", 1) for sec in self.sections)
+        score = float(self.sections_weight)
 
         for sec in self.sections:
             name = sec.get("name", "")
@@ -113,19 +102,19 @@ class CompletenessChecker:
                 if re.search(pat, text, re.IGNORECASE):
                     found = True
                     break
-            if found:
-                found_count += 1
-            else:
+            if not found:
                 result.missing_sections.append(name)
+                deduction = self.sections_weight * sec.get("weight", 1) / total_weight
+                score -= deduction
 
         if result.missing_sections:
             warnings.append(f"缺少章节：{', '.join(result.missing_sections)}")
 
-        return found_count * per_section_score, warnings
+        return max(0, score), warnings
 
     def _check_word_count(self, paper: ParsedPaper) -> tuple[float, list[str]]:
         warnings = []
-        min_words = self.word_count_cfg.get("min", 3000)
+        min_words = self.word_count_cfg.get("min", 2000)
         if paper.word_count >= min_words:
             return float(self.word_count_weight), warnings
 
@@ -141,7 +130,7 @@ class CompletenessChecker:
 
     def _check_references(self, paper: ParsedPaper) -> tuple[float, list[str]]:
         warnings = []
-        min_refs = self.references_cfg.get("min", 5)
+        min_refs = self.references_cfg.get("min", 0)
         if min_refs == 0:
             return float(self.references_weight), warnings
         if paper.reference_count >= min_refs:

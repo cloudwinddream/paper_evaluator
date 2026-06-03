@@ -11,9 +11,19 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
+from pathlib import Path
 from typing import Optional
 
 from src.llm_client import LLMClient
+
+PROMPT_DIR = Path(__file__).resolve().parent.parent / "config" / "prompts"
+
+
+def _load_prompt(name: str) -> str:
+    path = PROMPT_DIR / name
+    if path.exists():
+        return path.read_text(encoding="utf-8")
+    return ""
 
 
 # ── 模板章节标题（用于过滤） ──
@@ -52,7 +62,6 @@ def _char_ngrams(text: str, n: int = 8) -> set[str]:
 def _word_ngrams(text: str, n: int = 3) -> set[str]:
     """词级 n-gram（jieba 分词）"""
     import jieba
-    # 移除标点符号
     clean = re.sub(r"[^\w\u4e00-\u9fff]", " ", text)
     words = [w.strip() for w in jieba.cut(clean) if w.strip()]
     return {":".join(words[i:i+n]) for i in range(len(words) - n + 1)}
@@ -81,8 +90,8 @@ def _minhash_similarity(sig_a: list[int], sig_b: list[int]) -> float:
 
 
 # ── 判级 ──
-_SUSPECT_THRESHOLD = 0.40   # 疑似抄袭
-_HIGH_THRESHOLD = 0.60      # 高度疑似
+_SUSPECT_THRESHOLD = 0.40
+_HIGH_THRESHOLD = 0.60
 
 
 def _grade_similarity(sim: float) -> str:
@@ -99,10 +108,10 @@ class PlagiarismPair:
     student_a: str
     student_b: str
     similarity: float = 0.0
-    severity: str = "正常"                # 正常 / 疑似 / 高度疑似
+    severity: str = "正常"
     common_segments: list[dict] = field(default_factory=list)
     is_plagiarism: bool = False
-    ai_judgment: str = ""                 # AI 辅助判断结果
+    ai_judgment: str = ""
 
 
 @dataclass
@@ -132,7 +141,6 @@ class PlagiarismChecker:
 
         results = {p.student_name: PlagiarismResult(student_name=p.student_name) for p in papers}
 
-        # 预处理：过滤模板 + 分词
         processed = {}
         for p in papers:
             clean_text = _remove_template_sections(p.raw_text)
@@ -191,19 +199,11 @@ class PlagiarismChecker:
             student_b=paper_b.student_name,
         )
 
-        # 方法1：字符级 8-gram 相似度
         char_sim = self._jaccard_similarity(proc_a["char_set"], proc_b["char_set"])
-
-        # 方法2：词级 3-gram 相似度
         word_sim = self._jaccard_similarity(proc_a["word_set"], proc_b["word_set"])
-
-        # 方法3：MinHash 签名相似度
         minhash_sim = _minhash_similarity(proc_a["signature"], proc_b["signature"])
 
-        # 取三者平均值
         pair.similarity = round((char_sim + word_sim + minhash_sim) / 3, 4)
-
-        # 分级判定
         pair.severity = _grade_similarity(pair.similarity)
 
         if pair.similarity >= self.suspect_threshold:
@@ -212,17 +212,12 @@ class PlagiarismChecker:
             )
 
             if pair.similarity >= self.high_threshold:
-                # 高度疑似 → 自动标记
                 pair.is_plagiarism = True
-
-                # 可选 AI 辅助判断
                 if self.ai_check and self.llm:
                     pair.ai_judgment = self._ai_judge(proc_a["text"], proc_b["text"])
-                    # AI 如果判断非抄袭，降级标记
                     if "非抄袭" in pair.ai_judgment or "不构成抄袭" in pair.ai_judgment:
                         pair.is_plagiarism = False
             else:
-                # 疑似 → 标记为疑似
                 pair.is_plagiarism = True
 
         return pair
@@ -252,15 +247,14 @@ class PlagiarismChecker:
     def _ai_judge(self, text_a: str, text_b: str) -> str:
         """调用 LLM 判断两篇论文是否抄袭"""
         try:
+            system_prompt = _load_prompt("plagiarism_system.md")
+            if not system_prompt:
+                system_prompt = _load_prompt("plagiarism_system.txt")
+            if not system_prompt:
+                system_prompt = "你是一名查重专家。判断两篇课程设计报告是否存在实质抄袭。关注：共享相同的创新性内容/核心代码/独特表述 > 50% 才判定抄袭。模板文字、公共引用、通用技术术语不视为抄袭依据。仅回复「抄袭」或「非抄袭」。"
             resp = self.llm.chat(
                 messages=[
-                    {
-                        "role": "system",
-                        "content": "你是一名查重专家。判断两篇课程设计报告是否存在实质抄袭。"
-                                   "关注：共享相同的创新性内容/核心代码/独特表述 > 50% 才判定抄袭。"
-                                   "模板文字、公共引用、通用技术术语不视为抄袭依据。"
-                                   "仅回复「抄袭」或「非抄袭」。",
-                    },
+                    {"role": "system", "content": system_prompt},
                     {
                         "role": "user",
                         "content": f"论文A：\n{text_a[:3000]}\n\n论文B：\n{text_b[:3000]}",

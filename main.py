@@ -7,7 +7,6 @@ import os
 import sys
 from pathlib import Path
 
-# 修复 Windows 控制台 GBK 编码无法输出 Unicode 的问题
 if sys.stdout.encoding and sys.stdout.encoding.upper() != "UTF-8":
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -30,7 +29,6 @@ def load_env():
     """加载 .env 文件并返回配置字典"""
     load_dotenv()
 
-    # 读取所有 provider 配置（API_1, API_2, ... + 兼容旧版单 API 配置）
     providers = []
     for key_suffix in ["", "_2", "_3", "_4", "_5"]:
         base_url = os.getenv(f"API_BASE_URL{key_suffix}")
@@ -51,8 +49,25 @@ def load_env():
     }
 
 
+def load_settings() -> dict:
+    """从 config/settings.yaml 加载配置"""
+    settings_path = Path("config/settings.yaml")
+    if settings_path.exists():
+        with open(settings_path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    return {}
+
+
+def get_score_range(settings: dict, args) -> tuple[int, int]:
+    """获取分数范围：CLI 参数 > settings.yaml > 默认 60-89"""
+    sr = settings.get("score_range", {})
+    return (
+        args.score_min if args.score_min is not None else sr.get("min", 60),
+        args.score_max if args.score_max is not None else sr.get("max", 89),
+    )
+
+
 def load_requirements_config(requirements_path: str) -> dict:
-    """加载 requirements.yaml（评分标准）"""
     with open(requirements_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
@@ -104,28 +119,39 @@ def main():
         action="store_true",
         help="跳过自动生成评分标准，使用已有配置文件"
     )
+    parser.add_argument(
+        "--score-min",
+        type=int,
+        default=None,
+        help="最低分数（默认从 settings.yaml 读取，兜底 60）"
+    )
+    parser.add_argument(
+        "--score-max",
+        type=int,
+        default=None,
+        help="最高分数（默认从 settings.yaml 读取，兜底 89）"
+    )
     args = parser.parse_args()
 
     print("=" * 60)
     print("论文评审系统 v1.0")
     print("=" * 60)
 
-    # ── 1. 加载配置 ──
     print("\n[1/6] 加载配置...")
     env_config = load_env()
+    settings = load_settings()
+    score_min, score_max = get_score_range(settings, args)
+    print(f"  分数范围: {score_min} ~ {score_max}")
 
-    # 题目要求文档路径：命令行参数 > .env
     requirements_doc_path = args.requirements_doc or env_config["requirements_doc"]
     if not requirements_doc_path:
         print("  ✗ 未指定题目要求文档，请通过 --requirements-doc 参数或 .env 文件配置 REQUIREMENTS_DOC")
         sys.exit(1)
 
-    # 读取题目要求Word文档
     print(f"  读取题目要求文档: {requirements_doc_path}")
     requirements_text = PaperParser.parse_requirements_doc(requirements_doc_path)
     print(f"  ✓ 题目要求已读取 ({len(requirements_text)}字符)")
 
-    # ── 智能生成评分标准 ──
     providers = env_config.get("providers", [])
     if not providers:
         print("  ✗ 未配置 API，请检查 .env 中的 API_BASE_URL / API_KEY / API_MODEL")
@@ -135,11 +161,9 @@ def main():
     from src.llm_client import LLMClient
     llm_client = LLMClient(providers)
 
-    # 判断是否跳过自动生成评分标准
     config_path = Path(args.config)
 
     if args.generate_standards and not args.force_standards and config_path.exists():
-        # 仅生成模式：生成后退出
         print("\n[生成评分标准] 正在分析题目要求...")
         generator = StandardsGenerator(llm_client)
         result = generator.generate_and_save(requirements_text, args.config)
@@ -179,11 +203,9 @@ def main():
     else:
         print("  使用已有评分标准配置")
 
-    # ── 加载评分标准 ──
     if args.config and Path(args.config).exists():
         req_config = load_requirements_config(args.config)
     else:
-        # 使用默认配置
         req_config = {
             "evaluation_criteria": "默认评分标准",
             "dimensions": [
@@ -201,19 +223,16 @@ def main():
         sys.exit(1)
     print(f"  ✓ 评分维度: {', '.join(d['name'] for d in dimensions)}")
 
-    # 论文文件夹路径：命令行参数 > .env
     papers_dir = args.papers or env_config["papers_dir"]
     if not papers_dir:
         print("  ✗ 未指定论文文件夹，请通过 --papers 参数或 .env 文件配置 PAPERS_DIR")
         sys.exit(1)
 
-    # 输出目录：命令行参数 > .env > 默认
     output_dir = args.output or env_config["output_dir"]
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     print(f"  ✓ 输出目录: {output_path}")
 
-    # ── 2. 解析论文 ──
     print("\n[2/6] 解析论文...")
     paper_parser = PaperParser()
     papers = paper_parser.parse_directory(papers_dir)
@@ -223,23 +242,19 @@ def main():
         sys.exit(1)
     print(f"  ✓ 共解析 {len(papers)} 篇论文")
 
-    # ── 3. 完整性检测 ──
     print("\n[3/6] 完整性检测...")
-    # 从生成的配置中读取完整性规则
     completeness_rules = req_config.get("completeness", {})
     if not completeness_rules or not completeness_rules.get("sections"):
-        # 向后兼容：从旧版 _generated 或默认值构造
         generated_meta = req_config.get("_generated", {})
         old_sections = generated_meta.get("sections", [
             "项目概述", "功能实现", "技术栈", "项目结构",
             "代码实现", "项目演示截图", "遇到的问题与解决方案", "总结与展望"
         ])
-        old_min_words = generated_meta.get("min_word_count", 3000)
+        old_min_words = generated_meta.get("min_word_count", 2000)
         completeness_rules = {
             "sections_weight": 40,
             "sections": [{"name": s, "patterns": [s], "weight": 0} for s in old_sections],
             "word_count": {"min": old_min_words, "weight": 20},
-            "references": {"min": 0, "weight": 10},
             "figures": {"min": 3, "weight": 15},
             "format": {"min_paragraphs": 10, "max_long_line_ratio": 0.3, "weight": 15},
         }
@@ -255,7 +270,6 @@ def main():
             details.append(f"缺{len(result.missing_sections)}章")
         print(f"  {status} {paper.student_name}: {result.score:.0f}分{' - ' + ', '.join(details) if details else ''}")
 
-    # ── 4. AIGC检测 ──
     print("\n[4/6] AIGC检测...")
     aigc_detector = AIGCDetector({"threshold": 0.7, "ai_patterns": []})
     aigc_results = []
@@ -266,7 +280,6 @@ def main():
         print(f"  {icons.get(result.overall_risk, '❓')} {paper.student_name}: "
               f"{result.overall_risk} (AI概率{result.ai_probability:.0%})")
 
-    # ── 5. 查重检测 ──
     plagiarism_results = []
     if args.plagiarism:
         print("\n[5/6] 查重检测...")
@@ -289,7 +302,6 @@ def main():
             print(f"  ⚠ 发现 {plag_summary['suspected_plagiarism_count']} 对疑似抄袭:")
             for case in plag_summary["details"]:
                 print(f"    - {case['student']} ↔ {case['similar_to']} ({case['similarity']:.0%})")
-            # 输出级别详情
             for r in plagiarism_results:
                 for pair in r.suspicious_pairs:
                     other = pair.student_b if pair.student_a == r.student_name else pair.student_a
@@ -302,11 +314,10 @@ def main():
     else:
         print("\n[5/6] 跳过查重检测")
 
-    # ── 6. AI评审 ──
     evaluation_results = []
     if not args.skip_ai:
         print("\n[6/6] AI评审（这可能需要一些时间）...")
-        ai_evaluator = AIEvaluator(llm_client)
+        ai_evaluator = AIEvaluator(llm_client, score_min=score_min, score_max=score_max)
         evaluation_results = ai_evaluator.evaluate_batch(
             papers=papers,
             requirements=requirements_text,
@@ -317,14 +328,12 @@ def main():
     else:
         print("\n[6/6] 跳过AI评审")
 
-    # ── 生成报告 ──
     print("\n" + "=" * 60)
     print("生成报告...")
     print("=" * 60)
 
-    report_gen = ReportGenerator(output_dir)
+    report_gen = ReportGenerator(output_dir, score_min=score_min, score_max=score_max)
 
-    # Excel 汇总表（每个维度一列）
     excel_path = report_gen.generate_excel(
         papers=papers,
         completeness_results=completeness_results,
@@ -335,7 +344,6 @@ def main():
     )
     print(f"\n  📊 Excel汇总表: {excel_path}")
 
-    # Word 详细报告
     word_path = report_gen.generate_word_report(
         papers=papers,
         completeness_results=completeness_results,
@@ -346,7 +354,6 @@ def main():
     )
     print(f"  📝 Word详细报告: {word_path}")
 
-    # Markdown 报告（不含题目要求）
     md_path = report_gen.generate_markdown_report(
         papers=papers,
         completeness_results=completeness_results,

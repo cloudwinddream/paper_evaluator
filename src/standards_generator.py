@@ -13,13 +13,22 @@ import yaml
 
 from src.llm_client import LLMClient
 
+PROMPT_DIR = Path(__file__).resolve().parent.parent / "config" / "prompts"
+
+
+def _load_prompt(name: str) -> str:
+    path = PROMPT_DIR / name
+    if path.exists():
+        return path.read_text(encoding="utf-8")
+    return ""
+
 
 @dataclass
 class GeneratedStandards:
     dimensions: list[dict] = field(default_factory=list)
-    sections: list[dict] = field(default_factory=list)   # 每项含 name / patterns / weight
+    sections: list[dict] = field(default_factory=list)
     min_word_count: int = 2000
-    completeness_config: dict = field(default_factory=dict)  # 完整配置
+    completeness_config: dict = field(default_factory=dict)
     evaluation_criteria: str = ""
     raw_response: str = ""
     success: bool = True
@@ -37,9 +46,15 @@ class StandardsGenerator:
         prompt = self._build_analysis_prompt(requirements)
 
         try:
+            system_prompt = _load_prompt("standards_system.md")
+            if not system_prompt:
+                system_prompt = _load_prompt("standards_system.txt")
+            if not system_prompt:
+                system_prompt = "你是一位资深的课程设计指导教师，擅长制定评分标准和完整性检测规则。"
+
             response = self.llm.chat(
                 messages=[
-                    {"role": "system", "content": "你是一位资深的课程设计指导教师，擅长制定评分标准和完整性检测规则。"},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.3,
@@ -84,7 +99,11 @@ class StandardsGenerator:
         return result
 
     def _build_analysis_prompt(self, requirements: str) -> str:
-        return f"""你是一位资深的课程设计指导教师。请严格根据以下题目要求，制定一套完整的评审方案，包含评分标准和完整性检测规则。
+        template = _load_prompt("standards_generation.md")
+        if not template:
+            template = _load_prompt("standards_generation.txt")
+        if not template:
+            template = f"""你是一位资深的课程设计指导教师。请严格根据以下题目要求，制定一套完整的评审方案。
 
 ## 题目要求
 {requirements}
@@ -98,64 +117,35 @@ class StandardsGenerator:
 - **description**: 详细评分说明（至少50字）
 
 ### 第二部分：完整性检测规则
-根据题目要求，制定论文完整性检测规则：
-
 #### 2.1 必要章节（sections）
-列出报告中必须包含的章节，**每项**包含：
+列出报告中必须包含的章节，每项包含：
 - **name**: 章节名称
-- **patterns**: 检测该章节的正则表达式列表（中文模糊匹配），至少提供2个不同写法
-- **weight**: 该章节分值（所有章节weight之和应等于 sections_weight）
+- **patterns**: 检测该章节的正则表达式列表（中文模糊匹配），至少2个不同写法
+- **weight**: 该章节分值
 
 #### 2.2 字数要求（word_count）
-- **min**: 最低字数
+- **min**: 最低字数（课设报告建议1500-2500字）
 - **weight**: 字数项分值
 
-#### 2.3 参考文献（references）
-- **min**: 最少参考文献数量（若题目未要求则为0）
+#### 2.3 图表/截图（figures）
+- **min**: 最少图片数量
 - **weight**: 该项分值
 
-#### 2.4 图表/截图（figures）
-- **min**: 最少图片数量（若题目要求截图则为3，否则为0）
-- **weight**: 该项分值
-
-#### 2.5 格式（format）
+#### 2.4 格式（format）
 - **min_paragraphs**: 最少段落数
 - **max_long_line_ratio**: 超长行占比上限（0-1）
 - **weight**: 该项分值
 
-#### 2.6 总分配置
+#### 2.5 总分配置
 - **sections_weight**: 章节检查总分
 - **word_count_weight**: 字数检查总分
-- **references_weight**: 参考文献总分
 - **figures_weight**: 图表检查总分
 - **format_weight**: 格式检查总分
-以上五项之和应为100。
+以上四项之和应为100。
 
-## 输出格式（严格JSON，不要包含其他内容）
-```json
-{{{{
-    "evaluation_criteria": "整体评分原则...",
-    "dimensions": [
-        {{{{"name": "功能完整性", "weight": 0.30, "description": "详细说明..."}}}}
-    ],
-    "completeness": {{{{
-        "sections_weight": 40,
-        "sections": [
-            {{{{ "name": "项目概述", "patterns": ["项目概述|项目背景|项目简介", "第1[章节]"], "weight": 5 }}}}
-        ],
-        "word_count": {{{{ "min": 3000, "weight": 20 }}}},
-        "references": {{{{ "min": 5, "weight": 10 }}}},
-        "figures": {{{{ "min": 3, "weight": 15 }}}},
-        "format": {{{{ "min_paragraphs": 10, "max_long_line_ratio": 0.3, "weight": 15 }}}}
-    }}}}
-}}}}
-```
+注意：课程设计报告不要求参考文献，不要包含 references 相关字段。"""
 
-注意：
-- 维度权重之和必须严格等于 1.0
-- 完整性各检查项weight之和必须等于100
-- sections内各章节weight之和等于 sections_weight
-- 请直接输出JSON，不要包含其他内容"""
+        return template.format(requirements=requirements)
 
     def _parse_response(self, response: str) -> dict:
         json_str = response
@@ -189,11 +179,10 @@ class StandardsGenerator:
         for d in dimensions:
             d["weight"] = max(0.05, min(0.50, d["weight"]))
 
-        # 处理完整性规则（合并默认值）
+        # 处理完整性规则
         completeness = data.get("completeness", {})
         completeness.setdefault("sections_weight", 40)
-        completeness.setdefault("word_count_weight", 20)
-        completeness.setdefault("references_weight", 10)
+        completeness.setdefault("word_count_weight", 30)
         completeness.setdefault("figures_weight", 15)
         completeness.setdefault("format_weight", 15)
 
@@ -206,18 +195,16 @@ class StandardsGenerator:
             ]
             sections = completeness["sections"]
         if not sections:
-            # 向后兼容：从旧版 sections 列表转换
             old_sections = data.get("sections", [])
             old_min_words = data.get("min_word_count", 2000)
             completeness["sections"] = [
                 {"name": s, "patterns": [s], "weight": 0}
                 for s in old_sections
             ]
-            completeness.setdefault("word_count", {"min": old_min_words, "weight": 20})
+            completeness.setdefault("word_count", {"min": old_min_words, "weight": 30})
         else:
-            completeness.setdefault("word_count", {"min": 3000, "weight": 20})
+            completeness.setdefault("word_count", {"min": 2000, "weight": 30})
 
-        completeness.setdefault("references", {"min": 5, "weight": 10})
         completeness.setdefault("figures", {"min": 3, "weight": 15})
         completeness.setdefault("format", {"min_paragraphs": 10, "max_long_line_ratio": 0.3, "weight": 15})
 

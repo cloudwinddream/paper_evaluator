@@ -36,18 +36,29 @@ class App(Tk):
         self.geometry("1000x720")
         self.minsize(800, 600)
 
-        # 加载 .env 初始值
         load_dotenv()
         self._env_path = Path(".env")
         env = self._load_env()
+        score_range = self._load_score_range()
 
         self.running = False
         self.process = None
 
         self._build_menu()
-        self._build_ui(env)
+        self._build_ui(env, score_range)
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _load_score_range(self) -> dict:
+        settings_path = Path("config/settings.yaml")
+        if settings_path.exists():
+            try:
+                with open(settings_path, "r", encoding="utf-8") as f:
+                    settings = yaml.safe_load(f) or {}
+                return settings.get("score_range", {"min": 60, "max": 89})
+            except Exception:
+                pass
+        return {"min": 60, "max": 89}
 
     # ── 构建 UI ──
 
@@ -64,14 +75,12 @@ class App(Tk):
         menubar.add_cascade(label="帮助", menu=help_menu)
         self.config(menu=menubar)
 
-    def _build_ui(self, env):
-        # ── 主布局：上方配置区 + 下方输出区 ──
+    def _build_ui(self, env, score_range):
         top_frame = ttk.LabelFrame(self, text="配置", padding=12)
         top_frame.pack(fill="x", padx=10, pady=(10, 0))
 
-        self._build_config(top_frame, env)
+        self._build_config(top_frame, env, score_range)
 
-        # ── 操作按钮 ──
         btn_frame = ttk.Frame(self, padding=8)
         btn_frame.pack(fill="x", padx=10)
 
@@ -94,7 +103,6 @@ class App(Tk):
         self.status_label = ttk.Label(btn_frame, text="就绪", foreground="gray")
         self.status_label.pack(side="right", padx=8)
 
-        # ── 输出区 ──
         out_frame = ttk.LabelFrame(self, text="运行日志", padding=8)
         out_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
@@ -107,12 +115,10 @@ class App(Tk):
         scrollbar.pack(side="right", fill="y")
         self.output_text.pack(fill="both", expand=True)
 
-    def _build_config(self, parent, env):
-        # 使用 grid 布局
+    def _build_config(self, parent, env, score_range):
         parent.columnconfigure(1, weight=1)
 
         row = 0
-        # 论文文件夹
         ttk.Label(parent, text="论文文件夹:").grid(row=row, column=0, sticky="w", padx=(0, 6))
         self.papers_var = StringVar(value=env.get("PAPERS_DIR", ""))
         self.papers_entry = ttk.Entry(parent, textvariable=self.papers_var)
@@ -121,7 +127,6 @@ class App(Tk):
                    ).grid(row=row, column=2, padx=(4, 0))
         row += 1
 
-        # 题目要求
         ttk.Label(parent, text="题目要求文档:").grid(row=row, column=0, sticky="w", padx=(0, 6))
         self.req_var = StringVar(value=env.get("REQUIREMENTS_DOC", ""))
         self.req_entry = ttk.Entry(parent, textvariable=self.req_var)
@@ -130,7 +135,6 @@ class App(Tk):
                    ).grid(row=row, column=2, padx=(4, 0))
         row += 1
 
-        # 输出目录
         ttk.Label(parent, text="输出目录:").grid(row=row, column=0, sticky="w", padx=(0, 6))
         self.out_var = StringVar(value=env.get("OUTPUT_DIR", "./outputs"))
         self.out_entry = ttk.Entry(parent, textvariable=self.out_var)
@@ -139,7 +143,6 @@ class App(Tk):
                    ).grid(row=row, column=2, padx=(4, 0))
         row += 1
 
-        # 配置文件
         ttk.Label(parent, text="评分标准文件:").grid(row=row, column=0, sticky="w", padx=(0, 6))
         self.cfg_var = StringVar(value="config/requirements.yaml")
         self.cfg_entry = ttk.Entry(parent, textvariable=self.cfg_var)
@@ -148,39 +151,55 @@ class App(Tk):
                    ).grid(row=row, column=2, padx=(4, 0))
         row += 1
 
-        # ── API 配置（分隔线） ──
+        # ── API 配置 ──
         sep = ttk.Separator(parent, orient="horizontal")
-        sep.grid(row=row, column=0, columnspan=3, sticky="ew", pady=6)
+        sep.grid(row=row, column=0, columnspan=4, sticky="ew", pady=6)
         row += 1
 
         ttk.Label(parent, text="LLM 配置", font=("", 10, "bold")
-                  ).grid(row=row, column=0, columnspan=3, sticky="w")
+                  ).grid(row=row, column=0, columnspan=4, sticky="w")
         row += 1
 
         # Provider 1
         self._add_provider_fields(parent, row, 1, env)
         row += 4
 
-        # Provider 2（可选）
+        # Provider 2 + 互换按钮
         has_2 = env.get("API_BASE_URL_2") or env.get("API_KEY_2") or env.get("API_MODEL_2")
         self.show_provider_2 = BooleanVar(value=bool(has_2))
-        ttk.Checkbutton(parent, text="配置备用 Provider（限流/故障时自动切换）",
-                        variable=self.show_provider_2,
-                        command=lambda: self._toggle_provider_2(parent, row, env)
-                        ).grid(row=row, column=0, columnspan=3, sticky="w")
+        cb_row = row
+        chk = ttk.Checkbutton(parent, text="配置备用 Provider（限流/故障时自动切换）",
+                              variable=self.show_provider_2,
+                              command=lambda: self._toggle_provider_2(parent, cb_row, env))
+        chk.grid(row=cb_row, column=0, columnspan=2, sticky="w")
+        swap_btn = ttk.Button(parent, text="⇅ 互换", command=self._swap_providers, width=8)
+        swap_btn.grid(row=cb_row, column=2, padx=(4, 0))
         self.provider_2_frame = ttk.Frame(parent)
-        self.provider_2_frame.grid(row=row + 1, column=0, columnspan=3, sticky="ew",
+        self.provider_2_frame.grid(row=cb_row + 1, column=0, columnspan=4, sticky="ew",
                                    padx=(0, 0), pady=(2, 0))
         self.provider_2_frame.columnconfigure(1, weight=1)
         if has_2:
             self._add_provider_fields(self.provider_2_frame, 0, 2, env)
         else:
             self.provider_2_frame.grid_remove()
-        row += 2
+        row = cb_row + 2
+
+        # ── 分数范围 ──
+        score_frame = ttk.Frame(parent)
+        score_frame.grid(row=row, column=0, columnspan=4, sticky="w", pady=(6, 0))
+        ttk.Label(score_frame, text="分数范围:").pack(side="left", padx=(0, 4))
+        self.score_min_var = StringVar(value=str(score_range.get("min", 60)))
+        ttk.Entry(score_frame, textvariable=self.score_min_var, width=5).pack(side="left")
+        ttk.Label(score_frame, text="~").pack(side="left", padx=2)
+        self.score_max_var = StringVar(value=str(score_range.get("max", 89)))
+        ttk.Entry(score_frame, textvariable=self.score_max_var, width=5).pack(side="left")
+        ttk.Label(score_frame, text="（修改后需点击开始评审才会生效）",
+                  foreground="gray", font=("", 9)).pack(side="left", padx=(8, 0))
+        row += 1
 
         # ── 选项 ──
         opt_frame = ttk.Frame(parent)
-        opt_frame.grid(row=row, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        opt_frame.grid(row=row, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
         self.skip_ai_var = BooleanVar(value=False)
         ttk.Checkbutton(opt_frame, text="跳过 AI 评审", variable=self.skip_ai_var).pack(side="left", padx=(0, 12))
@@ -209,7 +228,6 @@ class App(Tk):
         var = StringVar(value=env.get(f"API_KEY{suffix}", ""))
         entry = ttk.Entry(parent, textvariable=var, show="*")
         entry.grid(row=row, column=1, columnspan=2, sticky="ew", padx=2)
-        # 显示/隐藏密钥
         show_btn = ttk.Button(parent, text="👁", width=3,
                               command=lambda e=entry: self._toggle_key_visibility(e))
         show_btn.grid(row=row, column=3, padx=(2, 0))
@@ -223,7 +241,14 @@ class App(Tk):
         setattr(self, f"api_model_{idx}_var", var)
         row += 1
 
-        # idx=1 的 provider 2 容器使用父级的行
+    def _swap_providers(self):
+        for attr in ["api_url", "api_key", "api_model"]:
+            v1 = getattr(self, f"{attr}_1_var", None)
+            v2 = getattr(self, f"{attr}_2_var", None)
+            if v1 is not None and v2 is not None:
+                tmp = v1.get()
+                v1.set(v2.get())
+                v2.set(tmp)
 
     def _toggle_key_visibility(self, entry):
         if entry.cget("show") == "*":
@@ -254,7 +279,6 @@ class App(Tk):
         return env
 
     def _save_to_env(self):
-        """将当前界面值写入 .env"""
         pairs = [
             ("PAPERS_DIR", self.papers_var.get()),
             ("REQUIREMENTS_DOC", self.req_var.get()),
@@ -288,7 +312,6 @@ class App(Tk):
         messagebox.showinfo("关于", "论文评审系统 v1.0\n课程设计报告自动检测与评分")
 
     def _log(self, text):
-        """向输出框追加文本"""
         self.output_text.config(state="normal")
         self.output_text.insert("end", text)
         self.output_text.see("end")
@@ -325,7 +348,6 @@ class App(Tk):
     def _build_args(self, generate_only: bool = False) -> list[str]:
         args = [sys.executable, "main.py"]
 
-        # 路径参数
         papers = self.papers_var.get().strip()
         if papers:
             args.extend(["--papers", papers])
@@ -342,7 +364,9 @@ class App(Tk):
         if cfg:
             args.extend(["--config", cfg])
 
-        # 选项
+        args.extend(["--score-min", self.score_min_var.get().strip()])
+        args.extend(["--score-max", self.score_max_var.get().strip()])
+
         if self.skip_ai_var.get():
             args.append("--skip-ai")
         if self.plagiarism_var.get():
@@ -361,10 +385,7 @@ class App(Tk):
         if self.running:
             return
 
-        # 先保存 .env
         self._save_to_env()
-
-        # 清空输出
         self.output_text.config(state="normal")
         self.output_text.delete("1.0", "end")
         self.output_text.config(state="disabled")
@@ -389,7 +410,6 @@ class App(Tk):
         threading.Thread(target=self._run_subprocess, args=(args,), daemon=True).start()
 
     def _run_subprocess(self, args: list[str]):
-        """在后台线程运行 main.py 子进程"""
         try:
             startupinfo = None
             if sys.platform == "win32":
