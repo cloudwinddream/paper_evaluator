@@ -12,6 +12,37 @@ from pathlib import Path
 from docx import Document
 
 
+def _try_markitdown(filepath: Path) -> str | None:
+    """通过 MarkItDown 提取文本（兜底方案，支持 .docx/.doc/.pdf）"""
+    try:
+        from markitdown import MarkItDown
+        md = MarkItDown()
+        result = md.convert(str(filepath))
+        text = result.text_content
+        if text and text.strip():
+            return text.strip()
+        return None
+    except ImportError:
+        return None
+    except Exception:
+        return None
+
+
+def _extract_text_from_pdf(pdf_path: Path) -> str:
+    """从 PDF 文件中提取文本"""
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(str(pdf_path))
+        text_parts = []
+        for page in reader.pages:
+            text = page.extract_text()
+            if text:
+                text_parts.append(text)
+        return "\n".join(text_parts)
+    except Exception as e:
+        raise RuntimeError(f"无法解析PDF文件: {pdf_path.name}: {e}")
+
+
 def _try_via_word(doc_path: Path) -> Path | None:
     """策略1: 通过 Word COM 直接打开（含修复模式）"""
     import win32com.client
@@ -211,10 +242,14 @@ class PaperParser:
         self.papers: list[ParsedPaper] = []
 
     def parse_file(self, filepath: str | Path) -> ParsedPaper:
-        """解析单个Word文件（支持 .docx 和 .doc）"""
+        """解析单个文件（支持 .docx, .doc 和 .pdf）"""
         filepath = Path(filepath)
+        suffix = filepath.suffix.lower()
 
-        is_doc = filepath.suffix.lower() == ".doc"
+        if suffix == ".pdf":
+            return self._parse_pdf(filepath)
+
+        is_doc = suffix == ".doc"
         temp_docx = None
         source_path = filepath
 
@@ -223,43 +258,49 @@ class PaperParser:
             source_path = temp_docx
 
         try:
-            doc = Document(source_path)
+            try:
+                doc = Document(source_path)
 
-            paper = ParsedPaper(
-                filename=filepath.name,
-                student_name=self._extract_student_name(filepath.name),
-            )
+                paper = ParsedPaper(
+                    filename=filepath.name,
+                    student_name=self._extract_student_name(filepath.name),
+                )
 
-            # 提取纯文本
-            paper.raw_text = self._extract_text(doc)
+                # 提取纯文本
+                paper.raw_text = self._extract_text(doc)
 
-            # 统计字数（中文字符+英文单词）
-            paper.word_count = self._count_words(paper.raw_text)
+                # 统计字数（中文字符+英文单词）
+                paper.word_count = self._count_words(paper.raw_text)
 
-            # 段落数
-            paper.paragraph_count = len(doc.paragraphs)
+                # 段落数
+                paper.paragraph_count = len(doc.paragraphs)
 
-            # 图片数量
-            paper.figure_count = self._count_figures(doc)
+                # 图片数量
+                paper.figure_count = self._count_figures(doc)
 
-            # 表格数量
-            paper.table_count = len(doc.tables)
+                # 表格数量
+                paper.table_count = len(doc.tables)
 
-            # 提取各部分内容
-            paper.sections = self._extract_sections(doc)
+                # 提取各部分内容
+                paper.sections = self._extract_sections(doc)
 
-            # 检查必要部分
-            paper.has_abstract = bool(paper.sections.get("abstract"))
-            paper.has_keywords = bool(paper.sections.get("keywords"))
-            paper.has_references = bool(paper.sections.get("references"))
+                # 检查必要部分
+                paper.has_abstract = bool(paper.sections.get("abstract"))
+                paper.has_keywords = bool(paper.sections.get("keywords"))
+                paper.has_references = bool(paper.sections.get("references"))
 
-            # 统计参考文献数量
-            paper.reference_count = self._count_references(paper.sections.get("references", ""))
+                # 统计参考文献数量
+                paper.reference_count = self._count_references(paper.sections.get("references", ""))
 
-            # 提取标题（通常是文档第一个有意义的段落）
-            paper.title = self._extract_title(doc)
+                # 提取标题（通常是文档第一个有意义的段落）
+                paper.title = self._extract_title(doc)
 
-            return paper
+                return paper
+            except Exception:
+                raw_text = _try_markitdown(filepath)
+                if raw_text:
+                    return self._build_paper_from_text(filepath, raw_text)
+                raise
         finally:
             if temp_docx and temp_docx.exists():
                 temp_docx.unlink()
@@ -268,13 +309,42 @@ class PaperParser:
                 except OSError:
                     pass
 
+    def _build_paper_from_text(self, filepath: Path, raw_text: str) -> ParsedPaper:
+        """从纯文本构建 ParsedPaper（兜底降级用，不包含图片/表格统计）"""
+        lines = [l for l in raw_text.split("\n") if l.strip()]
+        paper = ParsedPaper(
+            filename=filepath.name,
+            student_name=self._extract_student_name(filepath.name),
+            raw_text=raw_text,
+            word_count=self._count_words(raw_text),
+            paragraph_count=len(lines),
+        )
+        paper.sections = self._extract_sections_from_text(raw_text)
+        paper.has_abstract = bool(paper.sections.get("abstract"))
+        paper.has_keywords = bool(paper.sections.get("keywords"))
+        paper.has_references = bool(paper.sections.get("references"))
+        paper.reference_count = self._count_references(paper.sections.get("references", ""))
+        paper.title = self._extract_title_from_text(raw_text, lines)
+        return paper
+
+    def _parse_pdf(self, filepath: Path) -> ParsedPaper:
+        """解析 PDF 文件（pypdf 优先，失败后自动降级到 MarkItDown）"""
+        raw_text = None
+        try:
+            raw_text = _extract_text_from_pdf(filepath)
+        except Exception:
+            raw_text = _try_markitdown(filepath)
+        if not raw_text:
+            raise RuntimeError(f"无法解析PDF文件: {filepath.name}（pypdf + MarkItDown 均失败）")
+        return self._build_paper_from_text(filepath, raw_text)
+
     def parse_directory(self, directory: str | Path) -> list[ParsedPaper]:
-        """解析目录下所有Word文件（支持 .docx 和 .doc）"""
+        """解析目录下所有支持的文件（.docx, .doc, .pdf）"""
         directory = Path(directory)
         self.papers = []
 
         docx_names = {f.stem for f in directory.glob("*.docx")}
-        for filepath in sorted(directory.glob("*.docx")) + sorted(directory.glob("*.doc")):
+        for filepath in sorted(directory.glob("*.docx")) + sorted(directory.glob("*.doc")) + sorted(directory.glob("*.pdf")):
             # 同名的 .doc 和 .docx 同时存在时，跳过 .doc 避免重复
             if filepath.suffix.lower() == ".doc" and filepath.stem in docx_names:
                 continue
@@ -348,6 +418,39 @@ class PaperParser:
 
         return sections
 
+    def _extract_sections_from_text(self, text: str) -> dict[str, str]:
+        """从纯文本中提取各章节内容"""
+        sections = {}
+        current_section = "header"
+        current_content = []
+
+        for line in text.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+
+            matched_section = None
+            for section_name, patterns in self.SECTION_PATTERNS.items():
+                for pattern in patterns:
+                    if re.match(pattern, line, re.IGNORECASE):
+                        matched_section = section_name
+                        break
+                if matched_section:
+                    break
+
+            if matched_section:
+                if current_content:
+                    sections[current_section] = "\n".join(current_content)
+                current_section = matched_section
+                current_content = []
+            else:
+                current_content.append(line)
+
+        if current_content:
+            sections[current_section] = "\n".join(current_content)
+
+        return sections
+
     def _count_references(self, references_text: str) -> int:
         """统计参考文献数量"""
         if not references_text:
@@ -401,14 +504,36 @@ class PaperParser:
                 return text
         return "未识别标题"
 
+    def _extract_title_from_text(self, text: str, lines: list[str] | None = None) -> str:
+        """从纯文本中提取标题"""
+        if lines is None:
+            lines = [l.strip() for l in text.split("\n") if l.strip()]
+        for line in lines:
+            if len(line) < 100:
+                if re.match(r"论文题目|题目|Title", line, re.IGNORECASE):
+                    continue
+                return line
+        return "未识别标题"
+
     @staticmethod
     def parse_requirements_doc(filepath: str | Path) -> str:
-        """读取题目要求Word文档（支持 .docx 和 .doc），返回纯文本"""
+        """读取题目要求文档（支持 .docx, .doc, .pdf），返回纯文本"""
         filepath = Path(filepath)
         if not filepath.exists():
             raise FileNotFoundError(f"题目要求文档不存在: {filepath}")
 
-        is_doc = filepath.suffix.lower() == ".doc"
+        suffix = filepath.suffix.lower()
+        if suffix == ".pdf":
+            try:
+                raw_text = _extract_text_from_pdf(filepath)
+            except Exception:
+                raw_text = _try_markitdown(filepath)
+            if not raw_text:
+                raise RuntimeError(f"无法解析题目要求文档: {filepath.name}")
+            lines = [l.strip() for l in raw_text.split("\n") if l.strip()]
+            return "\n".join(lines)
+
+        is_doc = suffix == ".doc"
         temp_docx = None
         source_path = filepath
 
@@ -417,13 +542,19 @@ class PaperParser:
             source_path = temp_docx
 
         try:
-            doc = Document(source_path)
-            paragraphs = []
-            for para in doc.paragraphs:
-                text = para.text.strip()
-                if text:
-                    paragraphs.append(text)
-            return "\n".join(paragraphs)
+            try:
+                doc = Document(source_path)
+                paragraphs = []
+                for para in doc.paragraphs:
+                    text = para.text.strip()
+                    if text:
+                        paragraphs.append(text)
+                return "\n".join(paragraphs)
+            except Exception:
+                raw_text = _try_markitdown(filepath)
+                if raw_text:
+                    return raw_text
+                raise
         finally:
             if temp_docx and temp_docx.exists():
                 temp_docx.unlink()

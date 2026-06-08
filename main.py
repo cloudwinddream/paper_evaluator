@@ -77,7 +77,7 @@ def main():
     parser.add_argument(
         "--papers", "-p",
         default=None,
-        help="学生论文文件夹路径（包含.docx文件），不填则使用 .env 中的 PAPERS_DIR"
+        help="学生论文文件夹路径（包含.docx/.doc/.pdf文件），不填则使用 .env 中的 PAPERS_DIR"
     )
     parser.add_argument(
         "--config", "-c",
@@ -238,7 +238,7 @@ def main():
     papers = paper_parser.parse_directory(papers_dir)
 
     if not papers:
-        print("  ✗ 未找到任何Word文档，请检查路径")
+        print("  ✗ 未找到任何文档（.docx/.doc/.pdf），请检查路径")
         sys.exit(1)
     print(f"  ✓ 共解析 {len(papers)} 篇论文")
 

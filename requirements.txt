@@ -5,3 +5,5 @@ requests>=2.31.0
 python-dotenv>=1.0.0
 pywin32>=306
 jieba>=0.42.1
+pypdf>=3.0.0
+markitdown>=0.1.0

@@ -131,7 +131,7 @@ class App(Tk):
         self.req_var = StringVar(value=env.get("REQUIREMENTS_DOC", ""))
         self.req_entry = ttk.Entry(parent, textvariable=self.req_var)
         self.req_entry.grid(row=row, column=1, sticky="ew", padx=2)
-        ttk.Button(parent, text="浏览…", command=lambda: self._browse_file(self.req_var, [("Word文档", "*.doc *.docx")])
+        ttk.Button(parent, text="浏览…", command=lambda: self._browse_file(self.req_var, [("文档", "*.doc *.docx *.pdf")])
                    ).grid(row=row, column=2, padx=(4, 0))
         row += 1
 
