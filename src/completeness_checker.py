@@ -72,7 +72,7 @@ class CompletenessChecker:
         total_weight = sum(weights.values()) or 100
         result.score = sum(dim_scores.get(k, 0) for k in dim_scores)
         result.score = result.score * 100 / total_weight
-        result.score = max(60, min(100, round(result.score, 1)))
+        result.score = round(result.score, 1)
         result.is_complete = result.score >= 60 and len(result.missing_sections) <= 2
 
         result.details = {

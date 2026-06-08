@@ -63,12 +63,17 @@ class AIEvaluator:
             if len(paper_text) > max_chars:
                 paper_text = paper_text[:max_chars] + "\n...（论文内容过长，已截断）"
 
+            # 附加元数据帮助识别伪造
+            meta_info = f"\n\n【解析元数据】字数:{paper.word_count} | 段落:{paper.paragraph_count} | 图片:{paper.figure_count} | 表格:{paper.table_count}"
+            if paper.figure_count == 0:
+                meta_info += "\n【注意】该文档未检测到嵌入图片（可能为纯文本或PDF解析降级结果）"
+
             response = self.llm.chat(
                 messages=[
                     {"role": "system", "content": prompt},
-                    {"role": "user", "content": f"请评审以下论文：\n\n{paper_text}"},
+                    {"role": "user", "content": f"请评审以下论文：\n\n{paper_text}{meta_info}"},
                 ],
-                temperature=0.3,
+                temperature=0.15,
                 max_tokens=4096,
             )
             result.raw_response = response

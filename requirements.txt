@@ -7,3 +7,4 @@ pywin32>=306
 jieba>=0.42.1
 pypdf>=3.0.0
 markitdown>=0.1.0
+PyMuPDF>=1.24.0

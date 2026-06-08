@@ -43,6 +43,23 @@ def _extract_text_from_pdf(pdf_path: Path) -> str:
         raise RuntimeError(f"无法解析PDF文件: {pdf_path.name}: {e}")
 
 
+def _count_images_from_pdf(pdf_path: Path) -> int:
+    """从 PDF 文件中提取图片数量（使用 pymupdf）"""
+    try:
+        import fitz  # pymupdf
+        doc = fitz.open(str(pdf_path))
+        image_count = 0
+        for page in doc:
+            image_list = page.get_images(full=True)
+            image_count += len(image_list)
+        doc.close()
+        return image_count
+    except ImportError:
+        return 0
+    except Exception:
+        return 0
+
+
 def _try_via_word(doc_path: Path) -> Path | None:
     """策略1: 通过 Word COM 直接打开（含修复模式）"""
     import win32com.client
@@ -309,8 +326,8 @@ class PaperParser:
                 except OSError:
                     pass
 
-    def _build_paper_from_text(self, filepath: Path, raw_text: str) -> ParsedPaper:
-        """从纯文本构建 ParsedPaper（兜底降级用，不包含图片/表格统计）"""
+    def _build_paper_from_text(self, filepath: Path, raw_text: str, figure_count: int = 0) -> ParsedPaper:
+        """从纯文本构建 ParsedPaper（兜底降级用）"""
         lines = [l for l in raw_text.split("\n") if l.strip()]
         paper = ParsedPaper(
             filename=filepath.name,
@@ -318,6 +335,7 @@ class PaperParser:
             raw_text=raw_text,
             word_count=self._count_words(raw_text),
             paragraph_count=len(lines),
+            figure_count=figure_count,
         )
         paper.sections = self._extract_sections_from_text(raw_text)
         paper.has_abstract = bool(paper.sections.get("abstract"))
@@ -328,7 +346,7 @@ class PaperParser:
         return paper
 
     def _parse_pdf(self, filepath: Path) -> ParsedPaper:
-        """解析 PDF 文件（pypdf 优先，失败后自动降级到 MarkItDown）"""
+        """解析 PDF 文件（pypdf + pymupdf 图片计数，失败后降级到 MarkItDown）"""
         raw_text = None
         try:
             raw_text = _extract_text_from_pdf(filepath)
@@ -336,7 +354,10 @@ class PaperParser:
             raw_text = _try_markitdown(filepath)
         if not raw_text:
             raise RuntimeError(f"无法解析PDF文件: {filepath.name}（pypdf + MarkItDown 均失败）")
-        return self._build_paper_from_text(filepath, raw_text)
+
+        # 尝试用 pymupdf 统计图片数量
+        figure_count = _count_images_from_pdf(filepath)
+        return self._build_paper_from_text(filepath, raw_text, figure_count)
 
     def parse_directory(self, directory: str | Path) -> list[ParsedPaper]:
         """解析目录下所有支持的文件（.docx, .doc, .pdf）"""

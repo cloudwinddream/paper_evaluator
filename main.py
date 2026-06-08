@@ -58,13 +58,20 @@ def load_settings() -> dict:
     return {}
 
 
-def get_score_range(settings: dict, args) -> tuple[int, int]:
-    """获取分数范围：CLI 参数 > settings.yaml > 默认 60-89"""
+def get_score_range(settings: dict, args) -> dict:
+    """获取分数范围：内部 0-100，输出归一化 60-89"""
     sr = settings.get("score_range", {})
-    return (
-        args.score_min if args.score_min is not None else sr.get("min", 60),
-        args.score_max if args.score_max is not None else sr.get("max", 89),
-    )
+    out_r = settings.get("output_range", {})
+    internal_min = args.score_min if args.score_min is not None else sr.get("min", 0)
+    internal_max = args.score_max if args.score_max is not None else sr.get("max", 100)
+    output_min = out_r.get("min", 60)
+    output_max = out_r.get("max", 89)
+    return {
+        "internal_min": internal_min,
+        "internal_max": internal_max,
+        "output_min": output_min,
+        "output_max": output_max,
+    }
 
 
 def load_requirements_config(requirements_path: str) -> dict:
@@ -140,8 +147,13 @@ def main():
     print("\n[1/6] 加载配置...")
     env_config = load_env()
     settings = load_settings()
-    score_min, score_max = get_score_range(settings, args)
-    print(f"  分数范围: {score_min} ~ {score_max}")
+    score_ranges = get_score_range(settings, args)
+    score_min = score_ranges["internal_min"]
+    score_max = score_ranges["internal_max"]
+    output_min = score_ranges["output_min"]
+    output_max = score_ranges["output_max"]
+    print(f"  内部评分范围: {score_min} ~ {score_max}")
+    print(f"  输出归一化范围: {output_min} ~ {output_max}")
 
     requirements_doc_path = args.requirements_doc or env_config["requirements_doc"]
     if not requirements_doc_path:
@@ -271,7 +283,13 @@ def main():
         print(f"  {status} {paper.student_name}: {result.score:.0f}分{' - ' + ', '.join(details) if details else ''}")
 
     print("\n[4/6] AIGC检测...")
-    aigc_detector = AIGCDetector({"threshold": 0.7, "ai_patterns": []})
+    aigc_config = settings.get("aigc_detection", {})
+    aigc_detector = AIGCDetector({
+        "threshold": aigc_config.get("threshold", 0.6),
+        "fake_impl_weight": aigc_config.get("fake_impl_weight", 0.5),
+        "ai_writing_weight": aigc_config.get("ai_writing_weight", 0.4),
+        "ai_patterns": [],
+    })
     aigc_results = []
     for paper in papers:
         result = aigc_detector.detect(paper)
@@ -332,7 +350,13 @@ def main():
     print("生成报告...")
     print("=" * 60)
 
-    report_gen = ReportGenerator(output_dir, score_min=score_min, score_max=score_max)
+    report_gen = ReportGenerator(
+        output_dir,
+        score_min=score_min,
+        score_max=score_max,
+        output_min=output_min,
+        output_max=output_max,
+    )
 
     excel_path = report_gen.generate_excel(
         papers=papers,

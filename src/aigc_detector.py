@@ -77,7 +77,9 @@ class AIGCDetector:
     ]
 
     def __init__(self, config: dict):
-        self.threshold = config.get("threshold", 0.7)
+        self.threshold = config.get("threshold", 0.6)
+        self.fake_impl_weight = config.get("fake_impl_weight", 0.5)
+        self.ai_writing_weight = config.get("ai_writing_weight", 0.4)
         self.custom_patterns = config.get("ai_patterns", [])
         # 编译正则
         self.compiled_patterns = [
@@ -198,37 +200,39 @@ class AIGCDetector:
                 })
 
     def _calculate_probability(self, result: AIGCResult):
-        """计算AI生成概率"""
+        """计算AI生成概率（加强版）"""
         score = 0.0
 
-        # AI特征词评分
-        if result.ai_pattern_count > 10:
+        # AI特征词评分（权重更高）
+        if result.ai_pattern_count > 15:
+            score += 0.5
+        elif result.ai_pattern_count > 10:
             score += 0.4
         elif result.ai_pattern_count > 5:
-            score += 0.2
+            score += 0.25
         elif result.ai_pattern_count > 2:
-            score += 0.1
+            score += 0.15
 
-        # 格式问题评分
-        score += len(result.format_issues) * 0.1
+        # 格式问题评分（加强）
+        score += len(result.format_issues) * 0.15
 
-        # 图片问题评分
-        score += len(result.image_issues) * 0.1
+        # 图片问题评分（加强，可能是伪造）
+        score += len(result.image_issues) * 0.2
 
-        # 可疑段落评分
-        score += min(len(result.suspicious_segments) * 0.05, 0.3)
+        # 可疑段落评分（加强）
+        score += min(len(result.suspicious_segments) * 0.08, 0.4)
 
         result.ai_probability = min(score, 1.0)
         result.is_suspicious = result.ai_probability >= self.threshold
 
     def _determine_risk_level(self, result: AIGCResult):
-        """确定风险等级"""
+        """确定风险等级（更严格）"""
         prob = result.ai_probability
-        if prob >= 0.8:
+        if prob >= 0.7:
             result.overall_risk = "高风险"
-        elif prob >= 0.5:
+        elif prob >= 0.45:
             result.overall_risk = "中风险"
-        elif prob >= 0.3:
+        elif prob >= 0.25:
             result.overall_risk = "低风险"
         else:
             result.overall_risk = "正常"

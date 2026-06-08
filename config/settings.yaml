@@ -1,29 +1,42 @@
 # 论文评审系统配置文件（非敏感配置）
 # API密钥和路径等请通过 .env 文件配置
 
-# 分数范围（默认 60-89）
+# 内部评分范围（0-100），最终输出时归一化到 output_range
 score_range:
+  min: 0
+  max: 100
+
+# 最终输出分数归一化范围（如 60-89）
+output_range:
   min: 60
   max: 89
 
 # AI评审参数
 ai_evaluation:
-  temperature: 0.3
+  temperature: 0.15
   max_tokens: 4096
   request_delay: 1.0  # 每次API请求间隔（秒）
 
 # AIGC检测配置
 aigc_detection:
   enabled: true
-  threshold: 0.7
+  threshold: 0.6
+  fake_impl_weight: 0.5      # 伪实现检测权重
+  ai_writing_weight: 0.4     # AI写作特征权重
 
 # 查重配置
 plagiarism:
   enabled: true
-  suspect_threshold: 0.4         # 疑似阈值
-  high_threshold: 0.6            # 高度疑似阈值
-  min_match_length: 30           # 最小匹配长度（字符）
-  char_ngram_size: 8             # 字符 n-gram 大小
-  word_ngram_size: 3             # 词级 n-gram 大小
-  minhash_hashes: 128            # MinHash 签名数
-  ai_check: true                 # 是否启用 AI 辅助判断
+  suspect_threshold: 0.35    # 疑似阈值（更敏感）
+  high_threshold: 0.55       # 高度疑似阈值
+  min_match_length: 30
+  char_ngram_size: 8
+  word_ngram_size: 3
+  minhash_hashes: 128
+  ai_check: true
+
+# 惩罚权重配置
+penalty:
+  aigc_factor: 0.5           # AIGC惩罚系数（原0.3）
+  plagiarism_factor: 0.3     # 查重惩罚系数（原0.2）
+  fake_impl_factor: 0.4      # 伪实现惩罚系数
