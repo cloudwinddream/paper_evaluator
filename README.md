@@ -5,9 +5,9 @@
 ## 功能
 
 1. **智能标准生成** — 每次运行自动将题目要求传给大模型，动态推断评分维度、权重、完整性规则（必要章节/字数/图表/格式）
-2. **完整性检测** — 按 AI 生成的规则检查章节完整性、字数、图表、格式，扣分制计分（满分 100，保底 60）
-3. **AI 智能评审** — 调用 OpenAI 兼容 API 多维度评分，提供评分依据和评语（分数范围可配置，默认 60-89）
-4. **AIGC 检测** — 检测 AI 生成内容和可疑段落
+2. **完整性检测** — 按 AI 生成的规则检查章节完整性、字数、图表、格式，扣分制计分（0-100）
+3. **AI 智能评审** — 调用 OpenAI 兼容 API 多维度评分，含全链路穿透审计、12大问题标签、强制评分梯度分布
+4. **AIGC 检测** — 检测 AI 生成内容、伪实现、截图造假，惩罚系数加权到最终得分
 5. **查重检测** — 学生报告两两比对（默认关闭，需 `--plagiarism` 开启），含模板过滤/中文分词/MinHash指纹/AI辅助判断
 6. **报告生成** — 自动生成 Excel 汇总表、Word 详细报告和 Markdown 评审报告
 7. **支持 .doc / .pdf** — 兼容旧版 Word 格式（自动转换修复）和 PDF 格式
@@ -134,11 +134,11 @@ python main.py --force-standards
 
 ## 完整性评分
 
-完整性检测按 AI 生成的规则以**扣分制**计分：
+完整性检测按 AI 生成的规则以**扣分制**计分（0-100）：
 
 - 各检查项从满分开始，每缺一项按项权重扣分
 - 所有维度得分求和后归一化到百分制
-- 最终完整性得分**最低 60 分**（保底），最高 100 分
+- 最终完整性得分在 0-100 之间，无保底
 
 | 检查项 | 权重（AI 动态分配） | 说明 |
 |--------|---------------------|------|
@@ -151,44 +151,79 @@ python main.py --force-standards
 
 ## 评分机制
 
-### 分数范围
-所有分数默认在 **60-89 分**之间，可通过以下方式自定义：
+### 分数范围（双层架构）
 
-1. **`config/settings.yaml`** — 全局默认配置
-   ```yaml
-   score_range:
-     min: 60
-     max: 89
-   ```
-2. **CLI 参数** — 覆盖 settings.yaml
-   ```bash
-   python main.py --score-min 50 --score-max 95
-   ```
-3. **GUI 界面** — 在配置面板直接输入最低/最高分
+系统采用**内部评分 + 输出归一化**双层机制：
 
-优先级：**CLI 参数 > settings.yaml > 代码默认（60-89）**
+1. **内部评分**：0-100 分，完整性检测和 AI 评审均在此范围打分
+2. **输出归一化**：最终分数线性映射到 60-89 分（可通过配置调整）
+
+```yaml
+# config/settings.yaml
+score_range:        # 内部评分范围
+  min: 0
+  max: 100
+output_range:       # 输出归一化范围
+  min: 60
+  max: 89
+```
 
 ### 最终得分公式
 
 ```python
-final_score = completeness × 0.2 + total_score × 0.8
-if AIGC 可疑:  final_score *= (1 - ai_probability × 0.3)    # 最高扣 30%
-if 查重有风险: final_score *= (1 - highest_similarity × 0.2) # 最高扣 20%
-clamp(final_score, score_min, score_max)
+# 1. 内部加权（0-100）
+internal_score = completeness × 0.2 + total_score × 0.8
+
+# 2. 惩罚扣减
+if AIGC 可疑:   internal_score *= (1 - ai_probability × 0.5)   # 最高扣 50%
+if 查重有风险:  internal_score *= (1 - highest_similarity × 0.3) # 最高扣 30%
+
+# 3. 归一化到输出范围
+final_score = output_min + (internal_score / 100) × (output_max - output_min)
 ```
 
-- **completeness**：完整性检测得分（扣分制，保底 60）
-- **total_score**：AI 多维度评审加权总分
-- **AIGC 扣减**：检测到 AI 生成内容时，按概率最高扣减 30%
-- **查重扣减**：检测到抄袭时，按相似度最高扣减 20%
+### AI 评审梯度分布（强制）
+
+Prompt 内置强制分布要求，防止 AI 给分集中在高分段：
+
+| 分数段 | 占比要求 | 典型特征 |
+|--------|----------|----------|
+| 90-100 | ≤20% | 全链路完整、有性能测试、截图真实 |
+| 75-89 | 少数优秀 | 链路基本完整、有核心代码解释 |
+| 60-74 | 多数良好 | 1-2处断裂、测试不充分 |
+| 45-59 | 及格边缘 | 多处断裂、代码黑盒 |
+| 0-44 | 不及格 | 伪实现、AI代写、核心缺失 |
 
 ### Prompt 模板
 评审提示词存放在 `config/prompts/` 目录（.md 格式，已纳入版本管理），从文件动态加载，修改无需改动代码：
 
-- `evaluation_system.md` — AI 评审系统提示词，含 `{score_min}`/`{score_max}` 占位符
+- `evaluation_system.md` — AI 评审系统提示词（V8.0 穿透审计版），含全链路流水线审计、12大问题标签、强制评分梯度、禁止空泛评语
 - `standards_generation.md` — 评分标准生成提示词
 - `standards_system.md` — 标准生成系统提示词
 - `plagiarism_system.md` — AI 辅助查重判断提示词
+
+### 12大问题标签体系
+评审过程中自动标注以下缺陷标签：
+
+| 标签 | 含义 |
+|------|------|
+| `[CODE_BLACKBOX]` | 代码黑盒：只贴代码无逻辑解释 |
+| `[LOGIC_BREAK]` | 逻辑断层：需求章提到的功能在实现章消失 |
+| `[FAKE_IMAGE]` | 截图造假：静态原型图伪装真实系统 |
+| `[DATA_CONFLICT]` | 数据矛盾：需求章与测试章数据不一致 |
+| `[DB_FLAW]` | 数据库缺陷：主外键缺失、范式违反 |
+| `[EMPTY_TEST]` | 测试空洞：无测试用例、无性能数据 |
+| `[ORPHAN_CHART]` | 图表孤儿：图表无正文引导和解释 |
+| `[TECH_MISMATCH]` | 技术脱节：用了框架但未体现其核心特性 |
+
+## AIGC 检测（加强版）
+
+自动检测 AI 生成内容和伪实现，惩罚系数加权到最终得分：
+
+- **AI 特征词检测**：中英文 AI 套话模式匹配
+- **伪实现识别**：前端截图伪装、代码模板化、数据库与代码脱节
+- **风险阈值**：0.7 高风险 / 0.45 中风险 / 0.25 低风险
+- **惩罚权重**：AI 概率 × 0.5（最高扣 50%）
 
 ## 查重检测（`--plagiarism`）
 
@@ -196,8 +231,9 @@ clamp(final_score, score_min, score_max)
 
 1. **模板文本过滤** — 自动移除封面、目录、参考文献、致谢等公共部分
 2. **三种方法取平均** — 字符 8-gram + jieba 词级 3-gram + MinHash 128 位指纹
-3. **分级判定** — 疑似（≥0.4）/ 高度疑似（≥0.6）
+3. **分级判定** — 疑似（≥0.35）/ 高度疑似（≥0.55）
 4. **AI 辅助判断** — 对高度疑似对调用 LLM 做语义判定，可纠正误报
+5. **惩罚权重**：相似度 × 0.3（最高扣 30%）
 
 ## API 多 Provider 自动容灾
 
@@ -243,8 +279,8 @@ paper_evaluator/
 │   ├── settings.yaml          # 非敏感系统配置（含分数范围）
 │   └── prompts/               # LLM prompt 模板（.md 格式）
 ├── src/
-│   ├── paper_parser.py        # 文档解析（支持 .docx / .doc / .pdf，含 MarkItDown 降级）
-│   ├── completeness_checker.py # 完整性检测（扣分制，保底 60）
+│   ├── paper_parser.py        # 文档解析（支持 .docx / .doc / .pdf，含 MarkItDown 降级、PyMuPDF 图片计数）
+│   ├── completeness_checker.py # 完整性检测（扣分制，0-100）
 │   ├── llm_client.py          # 多 Provider LLM 客户端（自动容灾）
 │   ├── ai_evaluator.py        # AI 评审（可配置分数范围）
 │   ├── aigc_detector.py       # AIGC 检测
@@ -266,5 +302,6 @@ paper_evaluator/
 - 查重仅对比本次提交的论文之间，默认关闭
 - 首次运行会自动调用 API 生成评分标准和完整性规则，需要有效的 API 配置
 - `.doc` 文件依赖本地 Microsoft Word 转换（自动调用 COM 接口，仅 Windows）
-- `.pdf` 文件通过 `pypdf` 解析为主，失败时自动降级到 MarkItDown（需额外安装：`pip install markitdown`）
+- `.pdf` 文件通过 `pypdf` 解析文本 + `PyMuPDF` 统计图片数量，失败时自动降级到 MarkItDown
+- `markitdown` 为可选依赖（不安装不影响主流程，仅影响降级兜底能力）
 - 查重功能依赖 `jieba` 分词库，需 `pip install -r requirements.txt`
