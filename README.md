@@ -10,8 +10,9 @@
 4. **AIGC 检测** — 检测 AI 生成内容和可疑段落
 5. **查重检测** — 学生报告两两比对（默认关闭，需 `--plagiarism` 开启），含模板过滤/中文分词/MinHash指纹/AI辅助判断
 6. **报告生成** — 自动生成 Excel 汇总表、Word 详细报告和 Markdown 评审报告
-7. **支持 .doc** — 兼容旧版 Word 格式（自动转换修复）
-8. **多 Provider 自动容灾** — 配置多个 API Provider，遇限流(429)/鉴权失败/token超限/网络故障时自动切换
+7. **支持 .doc / .pdf** — 兼容旧版 Word 格式（自动转换修复）和 PDF 格式
+8. **MarkItDown 自动降级** — .docx/.doc/.pdf 解析失败时自动降级到 MarkItDown 兜底提取文本（依赖可选：`pip install markitdown`）
+9. **多 Provider 自动容灾** — 配置多个 API Provider，遇限流(429)/鉴权失败/token超限/网络故障时自动切换
 9. **可配置分数范围** — 通过 `config/settings.yaml` 或 CLI 参数 `--score-min`/`--score-max` 自定义最低/最高分
 
 ## 快速开始
@@ -55,10 +56,10 @@ OUTPUT_DIR=./outputs
 
 ### 3. 准备论文
 
-将学生的 Word 报告（.docx 或 .doc）放入 `PAPERS_DIR` 指定的文件夹：
+将学生的报告（.docx / .doc / .pdf）放入 `PAPERS_DIR` 指定的文件夹：
 
 - 文件名建议包含学生姓名或学号
-- 支持命名格式：`学部-专业-班级-学号-姓名.doc`、`姓名_题目.docx`、`学号-姓名.doc` 等
+- 支持命名格式：`学部-专业-班级-学号-姓名.doc`、`姓名_题目.docx`、`学号_姓名.pdf` 等
 
 ### 4. 运行评审
 
@@ -94,9 +95,9 @@ python gui.py
 
 | 参数 | 说明 |
 |------|------|
-| `--papers, -p` | 论文文件夹路径（覆盖 .env 中的 PAPERS_DIR） |
+| `--papers, -p` | 论文文件夹路径（覆盖 .env 中的 PAPERS_DIR，支持 .docx/.doc/.pdf） |
 | `--config, -c` | 评分标准配置文件（默认 config/requirements.yaml） |
-| `--requirements-doc, -r` | 题目要求 Word 文档（覆盖 .env） |
+| `--requirements-doc, -r` | 题目要求文档（支持 .docx/.doc/.pdf，覆盖 .env） |
 | `--output, -o` | 输出目录（覆盖 .env） |
 | `--skip-ai` | 跳过 AI 评审 |
 | `--plagiarism` | 启用查重检测（默认关闭） |
@@ -242,7 +243,7 @@ paper_evaluator/
 │   ├── settings.yaml          # 非敏感系统配置（含分数范围）
 │   └── prompts/               # LLM prompt 模板（.md 格式）
 ├── src/
-│   ├── paper_parser.py        # Word 文档解析（支持 .doc / .docx）
+│   ├── paper_parser.py        # 文档解析（支持 .docx / .doc / .pdf，含 MarkItDown 降级）
 │   ├── completeness_checker.py # 完整性检测（扣分制，保底 60）
 │   ├── llm_client.py          # 多 Provider LLM 客户端（自动容灾）
 │   ├── ai_evaluator.py        # AI 评审（可配置分数范围）
@@ -264,5 +265,6 @@ paper_evaluator/
 - AIGC 检测结果仅供参考，需人工复核
 - 查重仅对比本次提交的论文之间，默认关闭
 - 首次运行会自动调用 API 生成评分标准和完整性规则，需要有效的 API 配置
-- `.doc` 文件依赖本地 Microsoft Word 转换（自动调用 COM 接口）
+- `.doc` 文件依赖本地 Microsoft Word 转换（自动调用 COM 接口，仅 Windows）
+- `.pdf` 文件通过 `pypdf` 解析为主，失败时自动降级到 MarkItDown（需额外安装：`pip install markitdown`）
 - 查重功能依赖 `jieba` 分词库，需 `pip install -r requirements.txt`
