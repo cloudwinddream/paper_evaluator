@@ -87,16 +87,18 @@ short_comment 必须从 evaluation_basis 中提取**3-5个核心问题**，格�
 
 ## 输出格式（严格JSON）
 
+注意：下方JSON中的花括号是JSON语法，不是Python格式化占位符。
+
 ```json
-{
-    "dimension_scores": {
-        "维度1名称": 整数分数,
-        "维度2名称": 整数分数
-    },
-    "total_score": 整数加权总分,
+{{
+    "dimension_scores": {{
+        "维度1名称": "整数分数",
+        "维度2名称": "整数分数"
+    }},
+    "total_score": "整数加权总分",
     "evaluation_basis": "逐维度分析，每个维度必须：1.引用报告原文 2.标注问题标签 3.指出具体P0问题",
     "short_comment": "3-5个核心问题（从evaluation_basis提取）"
-}
+}}
 ```
 
 重要：所有分数必须在{score_min}-{score_max}之间。请直接输出JSON。
