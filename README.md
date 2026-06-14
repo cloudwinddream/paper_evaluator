@@ -13,7 +13,7 @@
 7. **支持 .doc / .pdf** — 兼容旧版 Word 格式（自动转换修复）和 PDF 格式
 8. **MarkItDown 自动降级** — .docx/.doc/.pdf 解析失败时自动降级到 MarkItDown 兜底提取文本（依赖可选：`pip install markitdown`）
 9. **多 Provider 自动容灾** — 配置多个 API Provider，遇限流(429)/鉴权失败/token超限/网络故障时自动切换
-9. **可配置分数范围** — 通过 `config/settings.yaml` 或 CLI 参数 `--score-min`/`--score-max` 自定义最低/最高分
+10. **后处理归一化** — AI 评审输出原始分数，报告生成后通过独立步骤调整输出范围与映射曲线
 
 ## 快速开始
 
@@ -81,7 +81,10 @@ python main.py --skip-ai
 python main.py --plagiarism
 
 # 自定义分数范围
-python main.py --score-min 50 --score-max 95
+python main.py --score-min 0 --score-max 100
+
+# 后处理归一化
+python main.py --post-normalize ./outputs --output-min 60 --output-max 90 --output-exponent 1.5
 ```
 
 **本地图形界面：**
@@ -104,8 +107,12 @@ python gui.py
 | `--skip-standards` | 跳过 AI 自动生成评分标准，使用已有配置文件 |
 | `--generate-standards, -g` | 仅生成评分标准后退出 |
 | `--force-standards` | 强制重新生成评分标准 |
-| `--score-min` | 最低分数（默认从 settings.yaml 读取，兜底 60） |
-| `--score-max` | 最高分数（默认从 settings.yaml 读取，兜底 89） |
+| `--score-min` | 内部最低分（默认 0，仅改变原始分数区间） |
+| `--score-max` | 内部最高分（默认 100，仅改变原始分数区间） |
+| `--post-normalize` | 对已有输出目录执行分数归一化后处理 |
+| `--output-min` | 后处理归一化目标最低分（与 `--post-normalize` 搭配） |
+| `--output-max` | 后处理归一化目标最高分（与 `--post-normalize` 搭配） |
+| `--output-exponent` | 后处理映射指数（1.0=线性，>1=高分压缩，<1=低分压缩，与 `--post-normalize` 搭配） |
 
 ## 标准生成与加载机制
 
@@ -151,21 +158,19 @@ python main.py --force-standards
 
 ## 评分机制
 
-### 分数范围（双层架构）
+### 分数归一化（两阶段分离）
 
-系统采用**内部评分 + 输出归一化**双层机制：
+系统采用**评审输出原始分 + 后处理归一化**分离机制：
 
-1. **内部评分**：0-100 分，完整性检测和 AI 评审均在此范围打分
-2. **输出归一化**：最终分数线性映射到 60-89 分（可通过配置调整）
+1. **原始评分**：AI 管道输出 0-100 原始分数（可配 `--score-min`/`--score-max` 调整区间）
+2. **后处理归一化**：评审完毕后通过独立步骤将原始分数映射到目标区间
 
-```yaml
-# config/settings.yaml
-score_range:        # 内部评分范围
-  min: 0
-  max: 100
-output_range:       # 输出归一化范围
-  min: 60
-  max: 89
+```bash
+# 1. 先运行评审，得到原始分数（默认 0-100）
+python main.py
+
+# 2. 查看原始分数分布，再决定归一化范围
+python main.py --post-normalize ./outputs --output-min 60 --output-max 90 --output-exponent 1.5
 ```
 
 ### 最终得分公式
@@ -178,9 +183,14 @@ internal_score = completeness × 0.2 + total_score × 0.8
 if AIGC 可疑:   internal_score *= (1 - ai_probability × 0.5)   # 最高扣 50%
 if 查重有风险:  internal_score *= (1 - highest_similarity × 0.3) # 最高扣 30%
 
-# 3. 归一化到输出范围
-final_score = output_min + (internal_score / 100) × (output_max - output_min)
+# 3. 后处理归一化（仅在有映射参数时执行）
+final_score = output_min + (internal_score / 100) ** output_exponent × (output_max - output_min)
 ```
+
+后处理归一化的指数映射：
+- `exponent=1.0`：线性映射（默认）
+- `exponent>1.0`：高分区间压缩，低分区间拉伸
+- `0<exponent<1.0`：低分区间压缩，高分区间拉伸
 
 ### AI 评审梯度分布（强制）
 
@@ -250,6 +260,7 @@ Prompt 内置强制分布要求，防止 AI 给分集中在高分段：
 
 | 文件 | 说明 |
 |------|------|
+| `scores_raw.json` | JSON 原始评分明细（每个维度的原始分、未归一化） |
 | `scores_summary.xlsx` | Excel 汇总表（每个维度单独一列，含最终得分和评语） |
 | `evaluation_report.docx` | Word 详细评审报告 |
 | `evaluation_report.md` | Markdown 评审报告 |
@@ -262,9 +273,9 @@ Prompt 内置强制分布要求，防止 AI 给分集中在高分段：
 |------|------|
 | 路径配置 | 论文文件夹、题目要求文档、输出目录、评分标准文件，均带浏览按钮 |
 | LLM 配置 | API 地址 / 密钥（可切换显示） / 模型，支持第二 Provider 备用，带 ⇅ 互换按钮 |
-| 分数范围 | 自定义最低/最高分（默认 60-89），立即生效 |
+| 后处理归一化 | 独立面板设置目标输出范围（min/max）和映射指数，支持单独运行归一化 |
 | 选项勾选 | 跳过 AI 评审、启用查重、使用已有标准、强制重新生成 |
-| 运行控制 | ▶ 开始评审 / 仅生成标准 / ■ 停止 |
+| 运行控制 | ▶ 开始评审 / 仅生成标准 / 运行归一化 / ■ 停止 |
 | 实时日志 | 深色终端风格文本框，子进程输出逐行显示 |
 | 自动保存 | 每次运行时路径和 API 配置写入 `.env`，下次启动自动加载 |
 
@@ -286,8 +297,8 @@ paper_evaluator/
 │   ├── aigc_detector.py       # AIGC 检测
 │   ├── plagiarism_checker.py  # 查重检测（MinHash/中文分词/AI辅助）
 │   ├── standards_generator.py # 智能标准生成（评分+完整性规则）
-│   └── report_generator.py    # 报告生成
-├── main.py                    # CLI 入口
+│   ├── report_generator.py    # 报告生成（默认恒等映射，输出原始分）
+├── main.py                    # CLI 入口（含后处理归一化逻辑）
 ├── gui.py                     # 本地图形界面（Tkinter）
 ├── .env                       # 敏感配置（不上传）
 ├── .env.example               # 配置模板
@@ -305,3 +316,4 @@ paper_evaluator/
 - `.pdf` 文件通过 `pypdf` 解析文本 + `PyMuPDF` 统计图片数量，失败时自动降级到 MarkItDown
 - `markitdown` 为可选依赖（不安装不影响主流程，仅影响降级兜底能力）
 - 查重功能依赖 `jieba` 分词库，需 `pip install -r requirements.txt`
+- 归一化是后处理步骤，管道运行输出原始分数（0-100），评审结束后可用 `--post-normalize` 或 GUI "运行归一化" 调整分数区间

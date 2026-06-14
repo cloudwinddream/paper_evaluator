@@ -39,43 +39,14 @@ class App(Tk):
         load_dotenv()
         self._env_path = Path(".env")
         env = self._load_env()
-        score_range = self._load_score_range()
 
         self.running = False
         self.process = None
 
         self._build_menu()
-        self._build_ui(env, score_range)
+        self._build_ui(env)
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
-
-    def _load_score_range(self) -> dict:
-        """读取输出归一化范围（GUI 显示的值）"""
-        settings_path = Path("config/settings.yaml")
-        out = {"min": 60, "max": 90, "exponent": 1.5}
-        if settings_path.exists():
-            try:
-                with open(settings_path, "r", encoding="utf-8") as f:
-                    settings = yaml.safe_load(f) or {}
-                or_ = settings.get("output_range", {})
-                out["min"] = or_.get("min", 60)
-                out["max"] = or_.get("max", 90)
-                out["exponent"] = or_.get("output_exponent", 1.5)
-            except Exception:
-                pass
-        # .env 覆盖
-        try:
-            from dotenv import load_dotenv
-            load_dotenv()
-            if os.getenv("OUTPUT_MIN"):
-                out["min"] = int(os.getenv("OUTPUT_MIN"))
-            if os.getenv("OUTPUT_MAX"):
-                out["max"] = int(os.getenv("OUTPUT_MAX"))
-            if os.getenv("OUTPUT_EXPONENT"):
-                out["exponent"] = float(os.getenv("OUTPUT_EXPONENT"))
-        except Exception:
-            pass
-        return out
 
     # ── 构建 UI ──
 
@@ -92,11 +63,11 @@ class App(Tk):
         menubar.add_cascade(label="帮助", menu=help_menu)
         self.config(menu=menubar)
 
-    def _build_ui(self, env, score_range):
+    def _build_ui(self, env):
         top_frame = ttk.LabelFrame(self, text="配置", padding=12)
         top_frame.pack(fill="x", padx=10, pady=(10, 0))
 
-        self._build_config(top_frame, env, score_range)
+        self._build_config(top_frame, env)
 
         btn_frame = ttk.Frame(self, padding=8)
         btn_frame.pack(fill="x", padx=10)
@@ -132,7 +103,7 @@ class App(Tk):
         scrollbar.pack(side="right", fill="y")
         self.output_text.pack(fill="both", expand=True)
 
-    def _build_config(self, parent, env, score_range):
+    def _build_config(self, parent, env):
         parent.columnconfigure(1, weight=1)
 
         row = 0
@@ -199,19 +170,16 @@ class App(Tk):
             self.provider_2_frame.grid_remove()
         row = cb_row + 2
 
-        # ── 输出归一化范围 ──
+        # ── 内部评分范围 ──
         score_frame = ttk.Frame(parent)
         score_frame.grid(row=row, column=0, columnspan=4, sticky="w", pady=(6, 0))
-        ttk.Label(score_frame, text="输出分数范围:").pack(side="left", padx=(0, 4))
-        self.score_min_var = StringVar(value=str(score_range.get("min", 60)))
+        ttk.Label(score_frame, text="内部评分范围:").pack(side="left", padx=(0, 4))
+        self.score_min_var = StringVar(value=str(0))
         ttk.Entry(score_frame, textvariable=self.score_min_var, width=5).pack(side="left")
         ttk.Label(score_frame, text="~").pack(side="left", padx=2)
-        self.score_max_var = StringVar(value=str(score_range.get("max", 90)))
+        self.score_max_var = StringVar(value=str(100))
         ttk.Entry(score_frame, textvariable=self.score_max_var, width=5).pack(side="left")
-        ttk.Label(score_frame, text="  映射指数:").pack(side="left", padx=(12, 4))
-        self.exponent_var = StringVar(value=str(score_range.get("exponent", 1.5)))
-        ttk.Entry(score_frame, textvariable=self.exponent_var, width=5).pack(side="left")
-        ttk.Label(score_frame, text="（1.0=线性, >1=高分更难）",
+        ttk.Label(score_frame, text="  （AI评审以这个范围打分，原始分直接写入报告）",
                   foreground="gray", font=("", 9)).pack(side="left", padx=(8, 0))
         row += 1
 
@@ -230,6 +198,26 @@ class App(Tk):
 
         self.force_std_var = BooleanVar(value=False)
         ttk.Checkbutton(opt_frame, text="强制重新生成标准", variable=self.force_std_var).pack(side="left")
+
+        # ── 后处理归一化区域 ──
+        post_frame = ttk.LabelFrame(self, text="后处理归一化", padding=12)
+        post_frame.pack(fill="x", padx=10, pady=(8, 0))
+
+        pf = ttk.Frame(post_frame)
+        pf.pack(fill="x")
+        ttk.Label(pf, text="输出分数范围:").pack(side="left", padx=(0, 4))
+        self.norm_min_var = StringVar(value="60")
+        ttk.Entry(pf, textvariable=self.norm_min_var, width=5).pack(side="left")
+        ttk.Label(pf, text="~").pack(side="left", padx=2)
+        self.norm_max_var = StringVar(value="90")
+        ttk.Entry(pf, textvariable=self.norm_max_var, width=5).pack(side="left")
+        ttk.Label(pf, text="  映射指数:").pack(side="left", padx=(12, 4))
+        self.norm_exp_var = StringVar(value="1.5")
+        ttk.Entry(pf, textvariable=self.norm_exp_var, width=5).pack(side="left")
+        ttk.Label(pf, text="（1.0=线性, >1=高分更难）",
+                  foreground="gray", font=("", 9)).pack(side="left", padx=(8, 0))
+        ttk.Button(pf, text="▶ 运行归一化", command=self._run_post_normalize, width=16
+                   ).pack(side="right", padx=(8, 0))
 
     # ── 工具方法 ──
 
@@ -298,9 +286,9 @@ class App(Tk):
             pairs.append((f"API_BASE_URL{suffix}", getattr(self, f"api_url_{idx}_var").get()))
             pairs.append((f"API_KEY{suffix}", getattr(self, f"api_key_{idx}_var").get()))
             pairs.append((f"API_MODEL{suffix}", getattr(self, f"api_model_{idx}_var").get()))
-        pairs.append(("OUTPUT_MIN", self.score_min_var.get().strip()))
-        pairs.append(("OUTPUT_MAX", self.score_max_var.get().strip()))
-        pairs.append(("OUTPUT_EXPONENT", self.exponent_var.get().strip()))
+        pairs.append(("OUTPUT_MIN", self.norm_min_var.get().strip()))
+        pairs.append(("OUTPUT_MAX", self.norm_max_var.get().strip()))
+        pairs.append(("OUTPUT_EXPONENT", self.norm_exp_var.get().strip()))
         for key, val in pairs:
             set_key(str(self._env_path), key, val)
 
@@ -378,7 +366,6 @@ class App(Tk):
 
         args.extend(["--score-min", self.score_min_var.get().strip()])
         args.extend(["--score-max", self.score_max_var.get().strip()])
-        args.extend(["--output-exponent", self.exponent_var.get().strip()])
 
         if self.skip_ai_var.get():
             args.append("--skip-ai")
@@ -459,6 +446,39 @@ class App(Tk):
             self.after(0, lambda: self._set_running(False))
         finally:
             self.process = None
+
+    def _run_post_normalize(self):
+        """运行后处理归一化"""
+        if self.running:
+            return
+
+        out = self.out_var.get().strip() or "./outputs"
+        if not Path(out).exists():
+            messagebox.showerror("错误", f"输出目录不存在: {out}\n请先运行评审生成报告。")
+            return
+
+        out_min = self.norm_min_var.get().strip()
+        out_max = self.norm_max_var.get().strip()
+        exponent = self.norm_exp_var.get().strip()
+        if not (out_min and out_max and exponent):
+            messagebox.showerror("错误", "请填写输出分数范围和映射指数")
+            return
+
+        args = [
+            sys.executable, "main.py",
+            "--post-normalize", out,
+            "--output-min", out_min,
+            "--output-max", out_max,
+            "--output-exponent", exponent,
+        ]
+
+        self.output_text.config(state="normal")
+        self.output_text.delete("1.0", "end")
+        self.output_text.config(state="disabled")
+
+        self._set_running(True)
+        self._log(f"{' '.join(args)}\n{'='*60}\n")
+        threading.Thread(target=self._run_subprocess, args=(args,), daemon=True).start()
 
 
 if __name__ == "__main__":

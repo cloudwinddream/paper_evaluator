@@ -24,8 +24,8 @@ class ReportGenerator:
     """报告生成器"""
 
     def __init__(self, output_dir: str, score_min: int = 0, score_max: int = 100,
-                 output_min: int = 60, output_max: int = 100,
-                 output_exponent: float = 1.5):
+                 output_min: int = 0, output_max: int = 100,
+                 output_exponent: float = 1.0):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.score_min = score_min
@@ -35,6 +35,10 @@ class ReportGenerator:
         self.output_exponent = output_exponent
 
     def _normalize_score(self, score: float) -> int:
+        """归一化：将内部分数 (score_min~score_max) 映射到输出范围 (output_min~output_max)
+        默认参数为 0-100/1.0，即恒等映射不修改分数。
+        预期输出范围可在生成报告后通过 --post-normalize 调整。
+        """
         if self.score_max == self.score_min:
             return self.output_min
         ratio = (score - self.score_min) / (self.score_max - self.score_min)

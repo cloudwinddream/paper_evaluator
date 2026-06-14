@@ -25,6 +25,11 @@ from src.plagiarism_checker import PlagiarismChecker
 from src.report_generator import ReportGenerator
 from src.standards_generator import StandardsGenerator
 
+try:
+    from openpyxl import load_workbook
+except ImportError:
+    pass  # --post-normalize 模式下会报更明确的错误
+
 
 def load_env():
     """加载 .env 文件并返回配置字典"""
@@ -66,7 +71,9 @@ def load_settings() -> dict:
 
 
 def get_score_range(settings: dict, args, env_config: dict) -> dict:
-    """获取分数范围：内部 0-100，输出归一化（优先级：args > .env > settings.yaml > 默认值）"""
+    """获取分数范围：内部 0-100（优先级：args > .env > settings.yaml > 默认值）
+    注：归一化（范围映射、指数）在生成报告后通过 --post-normalize 独立处理。
+    """
     sr = settings.get("score_range", {})
     out_r = settings.get("output_range", {})
 
@@ -78,12 +85,11 @@ def get_score_range(settings: dict, args, env_config: dict) -> dict:
         args.score_max if args.score_max is not None
         else env_config.get("score_internal_max") or sr.get("max", 100)
     )
-    output_min = env_config.get("output_min") or out_r.get("min", 60)
-    output_max = env_config.get("output_max") or out_r.get("max", 90)
-    output_exponent = (
-        args.output_exponent if args.output_exponent is not None
-        else env_config.get("output_exponent") or out_r.get("output_exponent", 1.5)
-    )
+
+    # 归一化默认恒等映射（不修改分数）；调整在 --post-normalize 中独立进行
+    output_min = 0
+    output_max = 100
+    output_exponent = 1.0
     return {
         "internal_min": internal_min,
         "internal_max": internal_max,
@@ -96,6 +102,80 @@ def get_score_range(settings: dict, args, env_config: dict) -> dict:
 def load_requirements_config(requirements_path: str) -> dict:
     with open(requirements_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def _run_post_normalize(args):
+    """读取已生成的 Excel 报告，对最终得分做后处理归一化"""
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        print("✗ 需要 openpyxl 库来读取 Excel，请执行: pip install openpyxl")
+        sys.exit(1)
+
+    output_dir = Path(args.post_normalize if isinstance(args.post_normalize, str) else "./outputs")
+    if not output_dir.exists():
+        print(f"✗ 输出目录不存在: {output_dir}")
+        sys.exit(1)
+
+    # 寻找最新的 scores_summary.xlsx
+    xlsx_files = sorted(output_dir.glob("scores_summary*.xlsx"))
+    if not xlsx_files:
+        print(f"✗ 未找到 scores_summary.xlsx 文件: {output_dir}")
+        sys.exit(1)
+    src_path = xlsx_files[-1]
+
+    print(f"  读取报告: {src_path}")
+    wb = load_workbook(src_path)
+    ws = wb.active
+
+    # 找到表头行
+    headers = [cell.value for cell in ws[1]]
+    try:
+        score_col = headers.index("最终得分") + 1  # 1-based
+    except ValueError:
+        print(f"✗ 未找到 '最终得分' 列，表头: {headers}")
+        sys.exit(1)
+
+    # 收集原始分数
+    raw_scores = []
+    rows = []
+    for row in ws.iter_rows(min_row=2, values_only=False):
+        cell = row[score_col - 1]
+        if cell.value is None or not isinstance(cell.value, (int, float)):
+            continue
+        raw_scores.append(cell.value)
+        rows.append(row)
+
+    if not raw_scores:
+        print("✗ 未找到有效的分数数据")
+        sys.exit(1)
+
+    # 获取归一化参数
+    output_min = args.output_min if args.output_min is not None else 60
+    output_max = args.output_max if args.output_max is not None else 90
+    output_exponent = args.output_exponent if args.output_exponent is not None else 1.5
+
+    print(f"  原始分数: min={min(raw_scores):.0f} max={max(raw_scores):.0f} (共 {len(raw_scores)} 个)")
+    print(f"  归一化: {output_min} ~ {output_max}, exponent={output_exponent}")
+    print()
+
+    # 对每个分数做归一化
+    rg = ReportGenerator(str(output_dir))
+    for i, row in enumerate(rows):
+        raw = row[score_col - 1].value
+        normalized = rg._normalize_score(raw)
+        row[score_col - 1].value = normalized
+
+    # 添加归一化说明（备注列或统计信息区域）
+    stats_row = len(rows) + 3
+    ws.cell(row=stats_row, column=1, value=f"归一化参数: 原始→{output_min}~{output_max}, exponent={output_exponent}")
+    ws.cell(row=stats_row + 1, column=1, value="(归一化前原始分数可在原始报告中查看)")
+
+    # 保存为新文件
+    stem = src_path.stem.replace("scores_summary", "scores_normalized")
+    out_path = src_path.with_name(f"{stem}.xlsx")
+    wb.save(out_path)
+    print(f"  ✓ 归一化报告已保存: {out_path}")
 
 
 def main():
@@ -149,21 +229,48 @@ def main():
         "--score-min",
         type=int,
         default=None,
-        help="最低分数（默认从 settings.yaml 读取，兜底 60）"
+        help="内部最低分数（默认 0）"
     )
     parser.add_argument(
         "--score-max",
         type=int,
         default=None,
-        help="最高分数（默认从 settings.yaml 读取，兜底 89）"
+        help="内部最高分数（默认 100，AI评审以这个范围为基准打分）"
+    )
+    parser.add_argument(
+        "--post-normalize",
+        nargs="?",
+        const=True,
+        default=False,
+        metavar="OUTPUT_DIR",
+        help="对已生成的报告做后处理归一化。可指定输出目录（默认 ./outputs），需配合 --output-min/--output-max/--output-exponent 使用"
+    )
+    parser.add_argument(
+        "--output-min",
+        type=int,
+        default=None,
+        help="后处理归一化：输出最低分（与 --post-normalize 配合使用）"
+    )
+    parser.add_argument(
+        "--output-max",
+        type=int,
+        default=None,
+        help="后处理归一化：输出最高分（与 --post-normalize 配合使用）"
     )
     parser.add_argument(
         "--output-exponent",
         type=float,
         default=None,
-        help="输出映射曲线指数（1.0=线性, >1=高分更难获得，默认从 settings.yaml 读取）"
+        help="后处理归一化：映射指数，1.0=线性 >1=高分更难获得（与 --post-normalize 配合使用）"
     )
     args = parser.parse_args()
+
+    # ══════════════════════════════════════════════════
+    # 后处理归一化模式
+    # ══════════════════════════════════════════════════
+    if args.post_normalize is not False:
+        _run_post_normalize(args)
+        return
 
     print("=" * 60)
     print("论文评审系统 v1.0")
@@ -177,12 +284,11 @@ def main():
     score_max = score_ranges["internal_max"]
     output_min = score_ranges["output_min"]
     output_max = score_ranges["output_max"]
-    print(f"  内部评分范围: {score_min} ~ {score_max}")
-    print(f"  输出归一化范围: {output_min} ~ {output_max}")
+    print(f"  评分范围: {score_min} ~ {score_max}（内部原始分数）")
+    print(f"  💡 归一化（范围映射/指数）在报告生成后通过 --post-normalize 独立处理")
     ai_temperature = settings.get("ai_evaluation", {}).get("temperature", 0.4)
     print(f"  AI评审temperature: {ai_temperature}")
-    output_exponent = score_ranges["output_exponent"]
-    print(f"  输出映射曲线 exponent: {output_exponent} (1.0=线性, >1=高分更难)")
+    output_exponent = 1.0
 
     requirements_doc_path = args.requirements_doc or env_config["requirements_doc"]
     if not requirements_doc_path:
