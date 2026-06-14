@@ -50,15 +50,32 @@ class App(Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _load_score_range(self) -> dict:
+        """读取输出归一化范围（GUI 显示的值）"""
         settings_path = Path("config/settings.yaml")
+        out = {"min": 60, "max": 90, "exponent": 1.5}
         if settings_path.exists():
             try:
                 with open(settings_path, "r", encoding="utf-8") as f:
                     settings = yaml.safe_load(f) or {}
-                return settings.get("score_range", {"min": 60, "max": 89})
+                or_ = settings.get("output_range", {})
+                out["min"] = or_.get("min", 60)
+                out["max"] = or_.get("max", 90)
+                out["exponent"] = or_.get("output_exponent", 1.5)
             except Exception:
                 pass
-        return {"min": 60, "max": 89}
+        # .env 覆盖
+        try:
+            from dotenv import load_dotenv
+            load_dotenv()
+            if os.getenv("OUTPUT_MIN"):
+                out["min"] = int(os.getenv("OUTPUT_MIN"))
+            if os.getenv("OUTPUT_MAX"):
+                out["max"] = int(os.getenv("OUTPUT_MAX"))
+            if os.getenv("OUTPUT_EXPONENT"):
+                out["exponent"] = float(os.getenv("OUTPUT_EXPONENT"))
+        except Exception:
+            pass
+        return out
 
     # ── 构建 UI ──
 
@@ -164,16 +181,14 @@ class App(Tk):
         self._add_provider_fields(parent, row, 1, env)
         row += 4
 
-        # Provider 2 + 互换按钮
+        # Provider 2 — 多模态模型专用于图片分析（非备用）
         has_2 = env.get("API_BASE_URL_2") or env.get("API_KEY_2") or env.get("API_MODEL_2")
         self.show_provider_2 = BooleanVar(value=bool(has_2))
         cb_row = row
-        chk = ttk.Checkbutton(parent, text="配置备用 Provider（限流/故障时自动切换）",
+        chk = ttk.Checkbutton(parent, text="配置多模态模型（用于图片分析）",
                               variable=self.show_provider_2,
                               command=lambda: self._toggle_provider_2(parent, cb_row, env))
         chk.grid(row=cb_row, column=0, columnspan=2, sticky="w")
-        swap_btn = ttk.Button(parent, text="⇅ 互换", command=self._swap_providers, width=8)
-        swap_btn.grid(row=cb_row, column=2, padx=(4, 0))
         self.provider_2_frame = ttk.Frame(parent)
         self.provider_2_frame.grid(row=cb_row + 1, column=0, columnspan=4, sticky="ew",
                                    padx=(0, 0), pady=(2, 0))
@@ -184,16 +199,19 @@ class App(Tk):
             self.provider_2_frame.grid_remove()
         row = cb_row + 2
 
-        # ── 分数范围 ──
+        # ── 输出归一化范围 ──
         score_frame = ttk.Frame(parent)
         score_frame.grid(row=row, column=0, columnspan=4, sticky="w", pady=(6, 0))
-        ttk.Label(score_frame, text="分数范围:").pack(side="left", padx=(0, 4))
+        ttk.Label(score_frame, text="输出分数范围:").pack(side="left", padx=(0, 4))
         self.score_min_var = StringVar(value=str(score_range.get("min", 60)))
         ttk.Entry(score_frame, textvariable=self.score_min_var, width=5).pack(side="left")
         ttk.Label(score_frame, text="~").pack(side="left", padx=2)
-        self.score_max_var = StringVar(value=str(score_range.get("max", 89)))
+        self.score_max_var = StringVar(value=str(score_range.get("max", 90)))
         ttk.Entry(score_frame, textvariable=self.score_max_var, width=5).pack(side="left")
-        ttk.Label(score_frame, text="（修改后需点击开始评审才会生效）",
+        ttk.Label(score_frame, text="  映射指数:").pack(side="left", padx=(12, 4))
+        self.exponent_var = StringVar(value=str(score_range.get("exponent", 1.5)))
+        ttk.Entry(score_frame, textvariable=self.exponent_var, width=5).pack(side="left")
+        ttk.Label(score_frame, text="（1.0=线性, >1=高分更难）",
                   foreground="gray", font=("", 9)).pack(side="left", padx=(8, 0))
         row += 1
 
@@ -241,15 +259,6 @@ class App(Tk):
         setattr(self, f"api_model_{idx}_var", var)
         row += 1
 
-    def _swap_providers(self):
-        for attr in ["api_url", "api_key", "api_model"]:
-            v1 = getattr(self, f"{attr}_1_var", None)
-            v2 = getattr(self, f"{attr}_2_var", None)
-            if v1 is not None and v2 is not None:
-                tmp = v1.get()
-                v1.set(v2.get())
-                v2.set(tmp)
-
     def _toggle_key_visibility(self, entry):
         if entry.cget("show") == "*":
             entry.config(show="")
@@ -289,6 +298,9 @@ class App(Tk):
             pairs.append((f"API_BASE_URL{suffix}", getattr(self, f"api_url_{idx}_var").get()))
             pairs.append((f"API_KEY{suffix}", getattr(self, f"api_key_{idx}_var").get()))
             pairs.append((f"API_MODEL{suffix}", getattr(self, f"api_model_{idx}_var").get()))
+        pairs.append(("OUTPUT_MIN", self.score_min_var.get().strip()))
+        pairs.append(("OUTPUT_MAX", self.score_max_var.get().strip()))
+        pairs.append(("OUTPUT_EXPONENT", self.exponent_var.get().strip()))
         for key, val in pairs:
             set_key(str(self._env_path), key, val)
 
@@ -366,6 +378,7 @@ class App(Tk):
 
         args.extend(["--score-min", self.score_min_var.get().strip()])
         args.extend(["--score-max", self.score_max_var.get().strip()])
+        args.extend(["--output-exponent", self.exponent_var.get().strip()])
 
         if self.skip_ai_var.get():
             args.append("--skip-ai")
@@ -433,14 +446,16 @@ class App(Tk):
                 self.after(0, self._log, line)
 
             self.process.wait()
-            if self.process.returncode == 0:
+            rc = self.process.returncode
+            if rc == 0:
                 self.after(0, lambda: self._set_running(False))
             else:
-                self.after(0, lambda: self._log(f"\n✗ 进程退出码: {self.process.returncode}\n"))
+                self.after(0, lambda r=rc: self._log(f"\n✗ 进程退出码: {r}\n"))
                 self.after(0, lambda: self._set_running(False))
 
         except Exception as e:
-            self.after(0, lambda: self._log(f"\n✗ 错误: {e}\n"))
+            err_msg = str(e)
+            self.after(0, lambda m=err_msg: self._log(f"\n✗ 错误: {m}\n"))
             self.after(0, lambda: self._set_running(False))
         finally:
             self.process = None

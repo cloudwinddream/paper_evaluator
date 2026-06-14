@@ -40,10 +40,12 @@ class EvaluationResult:
 class AIEvaluator:
     """AI论文评审器"""
 
-    def __init__(self, llm_client: LLMClient, score_min: int = 60, score_max: int = 89):
+    def __init__(self, llm_client: LLMClient, score_min: int = 0, score_max: int = 100,
+                 temperature: float = 0.4):
         self.llm = llm_client
         self.score_min = score_min
         self.score_max = score_max
+        self.temperature = temperature
 
     def evaluate(
         self,
@@ -51,6 +53,7 @@ class AIEvaluator:
         requirements: str,
         evaluation_criteria: str,
         dimensions: list[dict],
+        image_analysis: Optional[list] = None,
     ) -> EvaluationResult:
         """评审单篇论文"""
         result = EvaluationResult(student_name=paper.student_name)
@@ -67,13 +70,20 @@ class AIEvaluator:
             meta_info = f"\n\n【解析元数据】字数:{paper.word_count} | 段落:{paper.paragraph_count} | 图片:{paper.figure_count} | 表格:{paper.table_count}"
             if paper.figure_count == 0:
                 meta_info += "\n【注意】该文档未检测到嵌入图片（可能为纯文本或PDF解析降级结果）"
+            if image_analysis:
+                aigc_images = [a for a in image_analysis if a.is_likely_aigc and a.aigc_confidence > 0.5]
+                low_quality_images = [a for a in image_analysis if a.quality_issues]
+                if aigc_images:
+                    meta_info += f"\n【视觉分析】{len(aigc_images)}张图片疑似AIGC生成"
+                if low_quality_images:
+                    meta_info += f"\n【视觉分析】{len(low_quality_images)}张图片存在质量问题"
 
             response = self.llm.chat(
                 messages=[
                     {"role": "system", "content": prompt},
                     {"role": "user", "content": f"请评审以下论文：\n\n{paper_text}{meta_info}"},
                 ],
-                temperature=0.15,
+                temperature=self.temperature,
                 max_tokens=4096,
             )
             result.raw_response = response
@@ -220,15 +230,19 @@ class AIEvaluator:
         evaluation_criteria: str,
         dimensions: list[dict],
         delay: float = 60.0,
+        image_analysis_map: Optional[dict[str, list]] = None,
     ) -> list[EvaluationResult]:
         """批量评审论文"""
         results = []
         total = len(papers)
+        if image_analysis_map is None:
+            image_analysis_map = {}
 
         for i, paper in enumerate(papers, 1):
             print(f"[AI评审] 正在评审 {i}/{total}: {paper.student_name}")
 
-            result = self.evaluate(paper, requirements, evaluation_criteria, dimensions)
+            analysis = image_analysis_map.get(paper.student_name, [])
+            result = self.evaluate(paper, requirements, evaluation_criteria, dimensions, image_analysis=analysis)
             results.append(result)
 
             if result.success:

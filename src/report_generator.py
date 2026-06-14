@@ -24,21 +24,23 @@ class ReportGenerator:
     """报告生成器"""
 
     def __init__(self, output_dir: str, score_min: int = 0, score_max: int = 100,
-                 output_min: int = 60, output_max: int = 89):
+                 output_min: int = 60, output_max: int = 100,
+                 output_exponent: float = 1.5):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.score_min = score_min
         self.score_max = score_max
         self.output_min = output_min
         self.output_max = output_max
+        self.output_exponent = output_exponent
 
     def _normalize_score(self, score: float) -> int:
-        """将内部 0-100 分数归一化到输出范围 (默认 60-89)"""
         if self.score_max == self.score_min:
             return self.output_min
         ratio = (score - self.score_min) / (self.score_max - self.score_min)
         ratio = max(0.0, min(1.0, ratio))
-        return round(self.output_min + ratio * (self.output_max - self.output_min))
+        nonlinear = ratio ** self.output_exponent
+        return round(self.output_min + nonlinear * (self.output_max - self.output_min))
 
     # ──────────────────────────────────────────────
     # Excel 汇总表

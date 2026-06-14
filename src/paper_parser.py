@@ -3,7 +3,9 @@
 负责读取和解析Word文档，提取文本内容、结构信息等
 """
 
+import base64
 import re
+import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from typing import Optional
@@ -60,10 +62,30 @@ def _count_images_from_pdf(pdf_path: Path) -> int:
         return 0
 
 
-def _try_via_word(doc_path: Path) -> Path | None:
-    """策略1: 通过 Word COM 直接打开（含修复模式）"""
-    import win32com.client
+def _try_via_libreoffice(doc_path: Path) -> Path | None:
+    """策略1: 通过 LibreOffice 命令行转换 .doc → .docx（macOS/Linux 首选）"""
     try:
+        tmp_dir = Path(tempfile.mkdtemp())
+        result = subprocess.run(
+            ["soffice", "--headless", "--convert-to", "docx",
+             "--outdir", str(tmp_dir), str(doc_path.absolute())],
+            capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode != 0:
+            return None
+        # soffice 输出文件名与原文件相同（仅扩展名不同）
+        out_file = tmp_dir / f"{doc_path.stem}.docx"
+        if out_file.exists():
+            return out_file
+        return None
+    except Exception:
+        return None
+
+
+def _try_via_word(doc_path: Path) -> Path | None:
+    """策略2: 通过 Word COM 直接打开（含修复模式）"""
+    try:
+        import win32com.client
         word = win32com.client.DispatchEx("Word.Application")
         word.Visible = False
         doc = word.Documents.Open(
@@ -83,9 +105,9 @@ def _try_via_word(doc_path: Path) -> Path | None:
 
 
 def _try_via_word_shortpath(doc_path: Path) -> Path | None:
-    """策略2: 复制到短路径后通过 Word 打开"""
-    import win32com.client
+    """策略3: 复制到短路径后通过 Word 打开"""
     try:
+        import win32com.client
         import shutil
         short_dir = Path(tempfile.mkdtemp())
         short_path = short_dir / "input.doc"
@@ -112,9 +134,9 @@ def _try_via_word_shortpath(doc_path: Path) -> Path | None:
 
 
 def _try_via_word_as_text(doc_path: Path) -> Path | None:
-    """策略3: 通过 Word 以纯文本方式打开（绕过 XML 解析器）"""
-    import win32com.client
+    """策略4: 通过 Word 以纯文本方式打开（绕过 XML 解析器）"""
     try:
+        import win32com.client
         import shutil
         short_dir = Path(tempfile.mkdtemp())
         short_path = short_dir / "input.doc"
@@ -141,7 +163,7 @@ def _try_via_word_as_text(doc_path: Path) -> Path | None:
 
 
 def _try_as_docx(doc_path: Path) -> Path | None:
-    """策略3: 尝试直接当 .docx 解析（可能只是扩展名错误）"""
+    """策略5: 尝试直接当 .docx 解析（可能只是扩展名错误）"""
     try:
         import zipfile
         from docx import Document as DocxDocument
@@ -161,7 +183,7 @@ def _try_as_docx(doc_path: Path) -> Path | None:
 
 
 def _try_extract_text_raw(doc_path: Path) -> Path | None:
-    """策略4: 从二进制文件中暴力提取可读文本（最后手段）"""
+    """策略6: 从二进制文件中暴力提取可读文本（最后手段）"""
     try:
         text_parts = []
         with open(doc_path, "rb") as f:
@@ -209,6 +231,7 @@ def _try_extract_text_raw(doc_path: Path) -> Path | None:
 def _convert_doc_to_docx(doc_path: Path) -> Path:
     """将 .doc 文件转换为临时的 .docx 文件（自动尝试多种修复策略）"""
     strategies = [
+        ("LibreOffice 命令行转换", _try_via_libreoffice),
         ("Word 修复模式打开", _try_via_word),
         ("复制到短路径后重试", _try_via_word_shortpath),
         ("纯文本方式打开", _try_via_word_as_text),
@@ -221,6 +244,16 @@ def _convert_doc_to_docx(doc_path: Path) -> Path:
             return result
 
     raise RuntimeError(f"无法解析文件: {doc_path.name}（所有修复策略均失败）")
+
+
+@dataclass
+class ImageData:
+    """提取的图片数据结构"""
+    index: int                             # 图片编号（从1开始）
+    section: str                           # 所在章节名称
+    caption_context: str                   # 上下文文本（~200字符）
+    mime_type: str                         # MIME 类型 (如 "image/png")
+    base64_data: str                       # base64 编码的图片数据
 
 
 @dataclass
@@ -240,6 +273,7 @@ class ParsedPaper:
     has_abstract: bool = False             # 是否有摘要
     has_keywords: bool = False             # 是否有关键词
     has_references: bool = False           # 是否有参考文献
+    images: list[ImageData] = field(default_factory=list)  # 提取的图片列表
 
 
 class PaperParser:
@@ -295,6 +329,9 @@ class PaperParser:
                 # 图片数量
                 paper.figure_count = self._count_figures(doc)
 
+                # 提取图片数据
+                paper.images = self._extract_images_from_docx(doc)
+
                 # 表格数量
                 paper.table_count = len(doc.tables)
 
@@ -326,7 +363,10 @@ class PaperParser:
                 except OSError:
                     pass
 
-    def _build_paper_from_text(self, filepath: Path, raw_text: str, figure_count: int = 0) -> ParsedPaper:
+    def _build_paper_from_text(
+        self, filepath: Path, raw_text: str, figure_count: int = 0,
+        images: list[ImageData] | None = None,
+    ) -> ParsedPaper:
         """从纯文本构建 ParsedPaper（兜底降级用）"""
         lines = [l for l in raw_text.split("\n") if l.strip()]
         paper = ParsedPaper(
@@ -337,6 +377,8 @@ class PaperParser:
             paragraph_count=len(lines),
             figure_count=figure_count,
         )
+        if images is not None:
+            paper.images = images
         paper.sections = self._extract_sections_from_text(raw_text)
         paper.has_abstract = bool(paper.sections.get("abstract"))
         paper.has_keywords = bool(paper.sections.get("keywords"))
@@ -355,9 +397,10 @@ class PaperParser:
         if not raw_text:
             raise RuntimeError(f"无法解析PDF文件: {filepath.name}（pypdf + MarkItDown 均失败）")
 
-        # 尝试用 pymupdf 统计图片数量
+        # 尝试用 pymupdf 统计图片数量并提取图片数据
         figure_count = _count_images_from_pdf(filepath)
-        return self._build_paper_from_text(filepath, raw_text, figure_count)
+        images = self._extract_images_from_pdf(filepath)
+        return self._build_paper_from_text(filepath, raw_text, figure_count, images=images)
 
     def parse_directory(self, directory: str | Path) -> list[ParsedPaper]:
         """解析目录下所有支持的文件（.docx, .doc, .pdf）"""
@@ -402,6 +445,197 @@ class PaperParser:
             if "image" in rel.reltype:
                 image_count += 1
         return image_count
+
+    def _extract_images_from_docx(self, doc: Document) -> list[ImageData]:
+        """从 docx Document 对象中提取图片
+
+        遍历每个段落，检查 XML 中是否有 a:blip 元素（表示嵌入的图片）。
+        追踪当前章节，提取上下文文本作为 caption_context。
+        最多提取 10 张图片。
+        """
+        images: list[ImageData] = []
+        current_section = "header"
+
+        try:
+            ns_a = "http://schemas.openxmlformats.org/drawingml/2006/main"
+            ns_r = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+
+            paragraphs = doc.paragraphs
+            for i, para in enumerate(paragraphs):
+                text = para.text.strip()
+
+                # 追踪当前章节（复用章节标题检测逻辑）
+                if text:
+                    matched_section = None
+                    for section_name, patterns in self.SECTION_PATTERNS.items():
+                        for pattern in patterns:
+                            if re.match(pattern, text, re.IGNORECASE):
+                                matched_section = section_name
+                                break
+                        if matched_section:
+                            break
+                    if matched_section:
+                        current_section = matched_section
+
+                # 在段落 XML 中查找 a:blip 元素（图片引用）
+                blips = para._element.findall(f".//{{{ns_a}}}blip")
+                if not blips:
+                    continue
+
+                for blip in blips:
+                    if len(images) >= 10:
+                        print("[图片提取] 达到提取上限(10张)，停止提取")
+                        return images
+
+                    # 获取关系 ID (r:embed 属性)
+                    r_embed = blip.get(f"{{{ns_r}}}embed")
+                    if not r_embed:
+                        continue
+
+                    # 获取图片二进制数据
+                    try:
+                        image_part = doc.part.related_parts[r_embed]
+                        image_bytes = image_part.blob
+                    except (KeyError, AttributeError):
+                        continue
+
+                    # 确定 MIME 类型
+                    content_type = getattr(image_part, "content_type", "")
+                    if not content_type:
+                        # 根据关系 ID 后缀推断
+                        if r_embed.lower().endswith((".png", ".PNG")):
+                            content_type = "image/png"
+                        elif r_embed.lower().endswith((".jpg", ".jpeg", ".JPG", ".JPEG")):
+                            content_type = "image/jpeg"
+                        else:
+                            content_type = "image/png"
+
+                    # 提取 caption_context
+                    if text:
+                        caption_context = text[:200]
+                    elif i + 1 < len(paragraphs):
+                        next_text = paragraphs[i + 1].text.strip()
+                        if next_text and len(next_text) < 200:
+                            caption_context = next_text[:200]
+                        else:
+                            caption_context = current_section
+                    else:
+                        caption_context = current_section
+
+                    # 转为 base64
+                    b64_str = base64.b64encode(image_bytes).decode("utf-8")
+
+                    images.append(ImageData(
+                        index=len(images) + 1,
+                        section=current_section,
+                        caption_context=caption_context,
+                        mime_type=content_type,
+                        base64_data=b64_str,
+                    ))
+
+        except Exception as e:
+            print(f"[图片提取警告] docx 图片提取失败: {e}")
+            return []
+
+        return images
+
+    def _extract_images_from_pdf(self, pdf_path: Path) -> list[ImageData]:
+        """从 PDF 文件中提取图片（使用 pymupdf/fitz）
+
+        遍历每一页，使用 page.get_images() 获取图片引用，
+        通过 doc.extract_image(xref) 获取图片二进制数据。
+        建立页面→章节映射以确定图片所在章节。
+        最多提取 10 张图片。
+        """
+        import fitz  # pymupdf
+        images: list[ImageData] = []
+
+        try:
+            doc = fitz.open(str(pdf_path))
+
+            # 构建页面→章节映射
+            page_sections: dict[int, str] = {}
+            current_section = "header"
+            for page_num in range(len(doc)):
+                page = doc[page_num]
+                text = page.get_text()
+                for line in text.split("\n"):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    matched_section = None
+                    for section_name, patterns in self.SECTION_PATTERNS.items():
+                        for pattern in patterns:
+                            if re.match(pattern, line, re.IGNORECASE):
+                                matched_section = section_name
+                                break
+                        if matched_section:
+                            break
+                    if matched_section:
+                        current_section = matched_section
+                page_sections[page_num] = current_section
+
+            # 扩展名 → MIME 类型映射
+            mime_map = {
+                "png": "image/png",
+                "jpg": "image/jpeg",
+                "jpeg": "image/jpeg",
+                "gif": "image/gif",
+                "bmp": "image/bmp",
+                "tiff": "image/tiff",
+                "tif": "image/tiff",
+                "webp": "image/webp",
+            }
+
+            for page_num in range(len(doc)):
+                if len(images) >= 10:
+                    break
+
+                page = doc[page_num]
+                image_list = page.get_images(full=True)
+
+                for img_ref in image_list:
+                    if len(images) >= 10:
+                        break
+
+                    xref = img_ref[0]
+                    try:
+                        img_info = doc.extract_image(xref)
+                    except Exception:
+                        continue
+
+                    img_bytes = img_info["image"]
+                    img_ext = img_info.get("ext", "png").lower()
+                    mime_type = mime_map.get(img_ext, f"image/{img_ext}")
+
+                    b64_str = base64.b64encode(img_bytes).decode("utf-8")
+
+                    # 提取上下文（页面第一段有意义的文本）
+                    page_text_lines = [
+                        l.strip() for l in page.get_text().split("\n")
+                        if l.strip()
+                    ]
+                    caption_context = (
+                        page_text_lines[0][:200] if page_text_lines else current_section
+                    )
+
+                    images.append(ImageData(
+                        index=len(images) + 1,
+                        section=page_sections.get(page_num, "header"),
+                        caption_context=caption_context,
+                        mime_type=mime_type,
+                        base64_data=b64_str,
+                    ))
+
+            doc.close()
+        except ImportError:
+            print("[图片提取警告] pymupdf 未安装，无法提取 PDF 图片")
+            return []
+        except Exception as e:
+            print(f"[图片提取警告] PDF 图片提取失败: {e}")
+            return []
+
+        return images
 
     def _extract_sections(self, doc: Document) -> dict[str, str]:
         """提取各章节内容"""

@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 
 from src.paper_parser import PaperParser
 from src.completeness_checker import CompletenessChecker
+from src.image_analyzer import ImageAnalyzer
 from src.ai_evaluator import AIEvaluator
 from src.aigc_detector import AIGCDetector
 from src.plagiarism_checker import PlagiarismChecker
@@ -46,6 +47,12 @@ def load_env():
         "requirements_doc": os.getenv("REQUIREMENTS_DOC", ""),
         "output_dir": os.getenv("OUTPUT_DIR", "./outputs"),
         "papers_dir": os.getenv("PAPERS_DIR", ""),
+        # 评分范围，可在 .env 覆盖 settings.yaml
+        "score_internal_min": int(os.getenv("SCORE_INTERNAL_MIN", "")) if os.getenv("SCORE_INTERNAL_MIN", "") else None,
+        "score_internal_max": int(os.getenv("SCORE_INTERNAL_MAX", "")) if os.getenv("SCORE_INTERNAL_MAX", "") else None,
+        "output_min": int(os.getenv("OUTPUT_MIN", "")) if os.getenv("OUTPUT_MIN", "") else None,
+        "output_max": int(os.getenv("OUTPUT_MAX", "")) if os.getenv("OUTPUT_MAX", "") else None,
+        "output_exponent": float(os.getenv("OUTPUT_EXPONENT", "")) if os.getenv("OUTPUT_EXPONENT", "") else None,
     }
 
 
@@ -58,19 +65,31 @@ def load_settings() -> dict:
     return {}
 
 
-def get_score_range(settings: dict, args) -> dict:
-    """获取分数范围：内部 0-100，输出归一化 60-89"""
+def get_score_range(settings: dict, args, env_config: dict) -> dict:
+    """获取分数范围：内部 0-100，输出归一化（优先级：args > .env > settings.yaml > 默认值）"""
     sr = settings.get("score_range", {})
     out_r = settings.get("output_range", {})
-    internal_min = args.score_min if args.score_min is not None else sr.get("min", 0)
-    internal_max = args.score_max if args.score_max is not None else sr.get("max", 100)
-    output_min = out_r.get("min", 60)
-    output_max = out_r.get("max", 89)
+
+    internal_min = (
+        args.score_min if args.score_min is not None
+        else env_config.get("score_internal_min") or sr.get("min", 0)
+    )
+    internal_max = (
+        args.score_max if args.score_max is not None
+        else env_config.get("score_internal_max") or sr.get("max", 100)
+    )
+    output_min = env_config.get("output_min") or out_r.get("min", 60)
+    output_max = env_config.get("output_max") or out_r.get("max", 90)
+    output_exponent = (
+        args.output_exponent if args.output_exponent is not None
+        else env_config.get("output_exponent") or out_r.get("output_exponent", 1.5)
+    )
     return {
         "internal_min": internal_min,
         "internal_max": internal_max,
         "output_min": output_min,
         "output_max": output_max,
+        "output_exponent": output_exponent,
     }
 
 
@@ -138,22 +157,32 @@ def main():
         default=None,
         help="最高分数（默认从 settings.yaml 读取，兜底 89）"
     )
+    parser.add_argument(
+        "--output-exponent",
+        type=float,
+        default=None,
+        help="输出映射曲线指数（1.0=线性, >1=高分更难获得，默认从 settings.yaml 读取）"
+    )
     args = parser.parse_args()
 
     print("=" * 60)
     print("论文评审系统 v1.0")
     print("=" * 60)
 
-    print("\n[1/6] 加载配置...")
+    print("\n[1/7] 加载配置...")
     env_config = load_env()
     settings = load_settings()
-    score_ranges = get_score_range(settings, args)
+    score_ranges = get_score_range(settings, args, env_config)
     score_min = score_ranges["internal_min"]
     score_max = score_ranges["internal_max"]
     output_min = score_ranges["output_min"]
     output_max = score_ranges["output_max"]
     print(f"  内部评分范围: {score_min} ~ {score_max}")
     print(f"  输出归一化范围: {output_min} ~ {output_max}")
+    ai_temperature = settings.get("ai_evaluation", {}).get("temperature", 0.4)
+    print(f"  AI评审temperature: {ai_temperature}")
+    output_exponent = score_ranges["output_exponent"]
+    print(f"  输出映射曲线 exponent: {output_exponent} (1.0=线性, >1=高分更难)")
 
     requirements_doc_path = args.requirements_doc or env_config["requirements_doc"]
     if not requirements_doc_path:
@@ -171,13 +200,24 @@ def main():
     print(f"  ✓ 已加载 {len(providers)} 个 API Provider: {', '.join(p['model'] for p in providers)}")
 
     from src.llm_client import LLMClient
-    llm_client = LLMClient(providers)
+    text_llm = LLMClient(providers)
+
+    # 筛选视觉模态 Provider（模型名含 agnes/vision/multimodal）
+    vision_providers = [
+        p for p in providers
+        if any(kw in p["model"].lower() for kw in ("agnes", "vision", "multimodal"))
+    ]
+    vision_llm = LLMClient(vision_providers) if vision_providers else None
+    if vision_llm:
+        print(f"  ✓ 视觉分析已启用: {', '.join(p['model'] for p in vision_providers)}")
+    else:
+        print("  - 未配置视觉模态 Provider，图片分析将使用启发式规则")
 
     config_path = Path(args.config)
 
     if args.generate_standards and not args.force_standards and config_path.exists():
         print("\n[生成评分标准] 正在分析题目要求...")
-        generator = StandardsGenerator(llm_client)
+        generator = StandardsGenerator(text_llm)
         result = generator.generate_and_save(requirements_text, args.config)
         if result.success:
             print("\n  ✓ 评分标准生成完成！")
@@ -196,7 +236,7 @@ def main():
         else:
             print("\n[生成评分标准] 根据题目要求自动生成...")
 
-        generator = StandardsGenerator(llm_client)
+        generator = StandardsGenerator(text_llm)
         result = generator.generate_and_save(requirements_text, args.config)
         if result.success:
             print("  ✓ 评分标准已生成")
@@ -245,7 +285,7 @@ def main():
     output_path.mkdir(parents=True, exist_ok=True)
     print(f"  ✓ 输出目录: {output_path}")
 
-    print("\n[2/6] 解析论文...")
+    print("\n[2/7] 解析论文...")
     paper_parser = PaperParser()
     papers = paper_parser.parse_directory(papers_dir)
 
@@ -254,7 +294,23 @@ def main():
         sys.exit(1)
     print(f"  ✓ 共解析 {len(papers)} 篇论文")
 
-    print("\n[3/6] 完整性检测...")
+    print("\n[3/7] 图片分析...")
+    paper_image_analysis: dict[str, list] = {}
+    if vision_llm:
+        image_analyzer = ImageAnalyzer(vision_llm)
+        for paper in papers:
+            if paper.images:
+                print(f"  - {paper.student_name}: {len(paper.images)}张图片")
+                analysis = image_analyzer.analyze_images(paper.images)
+                paper_image_analysis[paper.student_name] = analysis
+                aigc_count = sum(1 for a in analysis if a.is_likely_aigc and a.aigc_confidence > 0.5)
+                if aigc_count:
+                    print(f"    → {aigc_count}张疑似AIGC生成")
+        print(f"  ✓ 共分析 {sum(len(v) for v in paper_image_analysis.values())} 张图片")
+    else:
+        print("  - 跳过（未配置视觉模态 Provider，后续使用启发式规则）")
+
+    print("\n[4/7] 完整性检测...")
     completeness_rules = req_config.get("completeness", {})
     if not completeness_rules or not completeness_rules.get("sections"):
         generated_meta = req_config.get("_generated", {})
@@ -282,17 +338,18 @@ def main():
             details.append(f"缺{len(result.missing_sections)}章")
         print(f"  {status} {paper.student_name}: {result.score:.0f}分{' - ' + ', '.join(details) if details else ''}")
 
-    print("\n[4/6] AIGC检测...")
+    print("\n[5/7] AIGC检测...")
     aigc_config = settings.get("aigc_detection", {})
     aigc_detector = AIGCDetector({
         "threshold": aigc_config.get("threshold", 0.6),
         "fake_impl_weight": aigc_config.get("fake_impl_weight", 0.5),
         "ai_writing_weight": aigc_config.get("ai_writing_weight", 0.4),
+        "image_analysis_weight": aigc_config.get("image_analysis_weight", 0.25),
         "ai_patterns": [],
     })
     aigc_results = []
     for paper in papers:
-        result = aigc_detector.detect(paper)
+        result = aigc_detector.detect(paper, image_analysis=paper_image_analysis.get(paper.student_name))
         aigc_results.append(result)
         icons = {"高风险": "🔴", "中风险": "🟡", "低风险": "🟢", "正常": "✅"}
         print(f"  {icons.get(result.overall_risk, '❓')} {paper.student_name}: "
@@ -300,7 +357,7 @@ def main():
 
     plagiarism_results = []
     if args.plagiarism:
-        print("\n[5/6] 查重检测...")
+        print("\n[6/7] 查重检测...")
         plagiarism_checker = PlagiarismChecker(
             config={
                 "suspect_threshold": 0.4,
@@ -311,7 +368,7 @@ def main():
                 "minhash_hashes": 128,
                 "ai_check": True,
             },
-            llm_client=llm_client,
+            llm_client=text_llm,
         )
         plagiarism_results = plagiarism_checker.check_all(papers)
 
@@ -330,21 +387,23 @@ def main():
         else:
             print("  ✓ 未发现明显抄袭")
     else:
-        print("\n[5/6] 跳过查重检测")
+        print("\n[6/7] 跳过查重检测")
 
     evaluation_results = []
     if not args.skip_ai:
-        print("\n[6/6] AI评审（这可能需要一些时间）...")
-        ai_evaluator = AIEvaluator(llm_client, score_min=score_min, score_max=score_max)
+        print("\n[7/7] AI评审（这可能需要一些时间）...")
+        ai_evaluator = AIEvaluator(text_llm, score_min=score_min, score_max=score_max,
+                                     temperature=ai_temperature)
         evaluation_results = ai_evaluator.evaluate_batch(
             papers=papers,
             requirements=requirements_text,
             evaluation_criteria=req_config.get("evaluation_criteria", ""),
             dimensions=dimensions,
+            image_analysis_map=paper_image_analysis,
         )
         print("  ✓ AI评审完成")
     else:
-        print("\n[6/6] 跳过AI评审")
+        print("\n[7/7] 跳过AI评审")
 
     print("\n" + "=" * 60)
     print("生成报告...")
@@ -356,6 +415,7 @@ def main():
         score_max=score_max,
         output_min=output_min,
         output_max=output_max,
+        output_exponent=output_exponent,
     )
 
     excel_path = report_gen.generate_excel(

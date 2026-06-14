@@ -5,6 +5,7 @@ AIGC检测模块
 
 import re
 from dataclasses import dataclass, field
+from typing import Optional
 
 from src.paper_parser import ParsedPaper
 
@@ -80,13 +81,14 @@ class AIGCDetector:
         self.threshold = config.get("threshold", 0.6)
         self.fake_impl_weight = config.get("fake_impl_weight", 0.5)
         self.ai_writing_weight = config.get("ai_writing_weight", 0.4)
+        self.image_analysis_weight = config.get("image_analysis_weight", 0.25)
         self.custom_patterns = config.get("ai_patterns", [])
         # 编译正则
         self.compiled_patterns = [
             re.compile(p, re.IGNORECASE) for p in (self.AI_PATTERNS + self.AI_PATTERNS_EN)
         ]
 
-    def detect(self, paper: ParsedPaper) -> AIGCResult:
+    def detect(self, paper: ParsedPaper, image_analysis: Optional[list] = None) -> AIGCResult:
         """检测论文的AI生成可能性"""
         result = AIGCResult(student_name=paper.student_name)
 
@@ -96,8 +98,8 @@ class AIGCDetector:
         # 2. 检测格式异常（可能是复制粘贴）
         self._detect_format_issues(paper, result)
 
-        # 3. 检测图片问题
-        self._detect_image_issues(paper, result)
+        # 3. 检测图片问题（使用视觉分析结果或启发式）
+        self._detect_image_issues(paper, result, image_analysis)
 
         # 4. 检测文本特征（句子长度均匀度、词汇丰富度等）
         self._detect_text_features(paper.raw_text, result)
@@ -155,9 +157,17 @@ class AIGCDetector:
             if special_chars > 0:
                 result.format_issues.append(f"存在{special_chars}个特殊Unicode字符，可能从网页复制")
 
-    def _detect_image_issues(self, paper: ParsedPaper, result: AIGCResult):
-        """检测图片问题"""
-        if paper.figure_count > 0:
+    def _detect_image_issues(self, paper: ParsedPaper, result: AIGCResult, image_analysis: Optional[list] = None):
+        """检测图片问题（优先使用视觉分析结果，无结果时回退到启发式规则）"""
+        if image_analysis:
+            for item in image_analysis:
+                if item.is_likely_aigc and item.aigc_confidence > 0.5:
+                    result.image_issues.append(f"图片#{item.index}: 疑似AIGC生成 (置信度{item.aigc_confidence:.0%})")
+                if item.quality_issues:
+                    for issue in item.quality_issues[:2]:
+                        if issue != "分析失败":
+                            result.image_issues.append(f"图片#{item.index}: {issue}")
+        elif paper.figure_count > 0:
             # 如果图片数量异常多
             if paper.figure_count > 20:
                 result.image_issues.append(f"图片数量异常多（{paper.figure_count}张），可能非原创")
@@ -216,8 +226,8 @@ class AIGCDetector:
         # 格式问题评分（加强）
         score += len(result.format_issues) * 0.15
 
-        # 图片问题评分（加强，可能是伪造）
-        score += len(result.image_issues) * 0.2
+        # 图片问题评分（使用可配置权重）
+        score += len(result.image_issues) * self.image_analysis_weight
 
         # 可疑段落评分（加强）
         score += min(len(result.suspicious_segments) * 0.08, 0.4)

@@ -6,14 +6,18 @@ score_range:
   min: 0
   max: 100
 
-# 最终输出分数归一化范围（如 60-89）
+# 最终输出分数归一化范围（用户可自行修改）
+# 内部 LLM 评分 0-100，最终映射到此范围
+# 推荐：min=60（及格线），max=100（满分）
+# output_exponent: 非线性曲线 — 1.0=线性 1.5=更严(高分更难) 0.7=更松(高分更容易)
 output_range:
   min: 60
-  max: 89
+  max: 90
+  output_exponent: 1.5
 
 # AI评审参数
 ai_evaluation:
-  temperature: 0.15
+  temperature: 0.4   # 0.15=保守稳定 0.4=评分更有区分度 0.7=较大随机性
   max_tokens: 4096
   request_delay: 1.0  # 每次API请求间隔（秒）
 
@@ -23,6 +27,7 @@ aigc_detection:
   threshold: 0.6
   fake_impl_weight: 0.5      # 伪实现检测权重
   ai_writing_weight: 0.4     # AI写作特征权重
+  image_analysis_weight: 0.25  # 图片分析结果对AI概率的贡献权重
 
 # 查重配置
 plagiarism:
