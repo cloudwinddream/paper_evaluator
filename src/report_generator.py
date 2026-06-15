@@ -90,7 +90,7 @@ class ReportGenerator:
         # ── 动态列：基础列 + 每个评分维度 + 综合列 ──
         base_headers = ["序号", "学生姓名", "论文标题", "字数", "完整性得分"]
         dim_headers = [d["name"] for d in dimensions]
-        tail_headers = ["AI评审总分", "AIGC风险", "查重最高相似度", "最终得分", "评语", "查重警告"]
+        tail_headers = ["AI评审总分", "AIGC风险", "查重最高相似度", "最终得分", "核心问题", "评语", "查重警告"]
         all_headers = base_headers + dim_headers + tail_headers
 
         for col, header in enumerate(all_headers, 1):
@@ -151,6 +151,7 @@ class ReportGenerator:
                 aigc.overall_risk if aigc else "N/A",
                 f"{plag.highest_similarity:.0%}" if plag else "0%",
                 final_score,
+                eval_.short_comment if eval_ and eval_.success else "",
                 self._format_comment(eval_.evaluation_basis) if eval_ and eval_.success else "",
                 plag_warning,
             ]
@@ -160,8 +161,8 @@ class ReportGenerator:
                 cell = ws.cell(row=row, column=col, value=value)
                 cell.font = data_font
                 cell.border = thin_border
-                # 姓名、标题、评语、警告左对齐
-                if col in [2, 3, len(all_headers) - 1, len(all_headers)]:
+                # 姓名、标题、核心问题、评语、警告左对齐
+                if col in [2, 3, len(all_headers) - 2, len(all_headers) - 1, len(all_headers)]:
                     cell.alignment = left_align
                 else:
                     cell.alignment = data_align
