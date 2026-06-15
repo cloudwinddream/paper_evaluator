@@ -56,30 +56,6 @@ class ReportGenerator:
         text = re.sub(r"(\[[第全])", r"\n\1", text)
         return text.strip()
 
-    @staticmethod
-    def _extract_problems(basis: str) -> str:
-        """从详细评语中提取核心问题（20字以内）"""
-        if not basis:
-            return ""
-        segments = re.split(r"\[(?:第\d+章|全文)\]\s*", basis)
-        indicators = [
-            "缺少", "未", "不足", "缺失", "混乱", "错误",
-            "失败", "无", "没有", "扣分", "较差", "不规范",
-        ]
-        problems = []
-        for seg in segments:
-            seg = seg.strip()
-            if not seg:
-                continue
-            # 取第一个分句
-            clause = re.split(r"[，。]", seg)[0].strip()
-            if any(ind in clause for ind in indicators):
-                problems.append(clause)
-        if not problems:
-            return ""
-        result = "；".join(problems)
-        return (result[:19] + "…") if len(result) > 20 else result
-
     # ──────────────────────────────────────────────
     # Excel 汇总表
     # ──────────────────────────────────────────────
@@ -170,13 +146,21 @@ class ReportGenerator:
             for d in dimensions:
                 score = eval_.dimension_scores.get(d["name"], "N/A") if eval_ and eval_.success else "N/A"
                 dim_data.append(score)
+            def _format_core_problems(problems: list) -> str:
+                if not problems:
+                    return ""
+                lines = []
+                for p in problems:
+                    lines.append(p)
+                return "\n".join(lines)
+
             tail_data = [
                 eval_.total_score if eval_ and eval_.success else "评审失败",
                 aigc.overall_risk if aigc else "N/A",
                 f"{plag.highest_similarity:.0%}" if plag else "0%",
                 final_score,
-                self._extract_problems(eval_.evaluation_basis) if eval_ and eval_.success else "",
-                self._format_comment(eval_.evaluation_basis) if eval_ and eval_.success else "",
+                eval_.short_comment if eval_ and eval_.success else "",
+                _format_core_problems(eval_.core_problems) if eval_ and eval_.success and eval_.core_problems else self._format_comment(eval_.evaluation_basis) if eval_ and eval_.success else "",
                 plag_warning,
             ]
             row_data = base_data + dim_data + tail_data
@@ -514,6 +498,11 @@ class ReportGenerator:
                 lines.append("")
                 lines.append(f"**评分依据**：{eval_.evaluation_basis}")
                 lines.append("")
+                if eval_.core_problems:
+                    lines.append("**核心问题**：")
+                    for problem in eval_.core_problems:
+                        lines.append(f"- {problem}")
+                    lines.append("")
             elif eval_:
                 lines.append(f"**AI评审失败**：{eval_.error_message}")
                 lines.append("")

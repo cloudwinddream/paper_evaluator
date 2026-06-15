@@ -32,6 +32,7 @@ class EvaluationResult:
     dimension_scores: dict = field(default_factory=dict)
     evaluation_basis: str = ""
     short_comment: str = ""
+    core_problems: list = field(default_factory=list)
     raw_response: str = ""
     success: bool = True
     error_message: str = ""
@@ -93,6 +94,7 @@ class AIEvaluator:
             result.dimension_scores = parsed.get("dimension_scores", {})
             result.evaluation_basis = parsed.get("evaluation_basis", "")
             result.short_comment = parsed.get("short_comment", "")
+            result.core_problems = parsed.get("core_problems", [])
 
         except Exception as e:
             result.success = False
@@ -180,6 +182,7 @@ class AIEvaluator:
             "total_score": 0,
             "evaluation_basis": "",
             "short_comment": "",
+            "core_problems": [],
         }
 
         dim_scores = data.get("dimension_scores", {})
@@ -200,6 +203,17 @@ class AIEvaluator:
         result["evaluation_basis"] = data.get("evaluation_basis", "未提供评分依据")
         result["short_comment"] = data.get("short_comment", "无评语")
 
+        raw_problems = data.get("core_problems", [])
+        if isinstance(raw_problems, dict):
+            # dict format: {"P0": [...], "P1": [...], "P2": [...]}
+            flat = []
+            for level in ("P0", "P1", "P2"):
+                for item in raw_problems.get(level, []):
+                    flat.append(f"[{level}]{item}")
+            result["core_problems"] = flat
+        elif isinstance(raw_problems, list):
+            result["core_problems"] = raw_problems
+
         return result
 
     def _extract_from_text(self, text: str, dimensions: list[dict]) -> dict:
@@ -209,6 +223,7 @@ class AIEvaluator:
             "total_score": 0,
             "evaluation_basis": text[:500],
             "short_comment": "解析失败，请人工复核",
+            "core_problems": [],
         }
 
         for dim in dimensions:
