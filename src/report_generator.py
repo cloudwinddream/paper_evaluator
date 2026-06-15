@@ -5,6 +5,7 @@
 
 from datetime import datetime
 from pathlib import Path
+import re
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -46,6 +47,15 @@ class ReportGenerator:
         nonlinear = ratio ** self.output_exponent
         return round(self.output_min + nonlinear * (self.output_max - self.output_min))
 
+    @staticmethod
+    def _format_comment(basis: str) -> str:
+        """格式化评分依据为 Excel 友好文本：在 [第n章] [全文] 前插入换行"""
+        if not basis:
+            return ""
+        text = basis.replace("\n", " ").replace("\r", "")
+        text = re.sub(r"(\[[第全])", r"\n\1", text)
+        return text.strip()
+
     # ──────────────────────────────────────────────
     # Excel 汇总表
     # ──────────────────────────────────────────────
@@ -80,7 +90,7 @@ class ReportGenerator:
         # ── 动态列：基础列 + 每个评分维度 + 综合列 ──
         base_headers = ["序号", "学生姓名", "论文标题", "字数", "完整性得分"]
         dim_headers = [d["name"] for d in dimensions]
-        tail_headers = ["AI评审总分", "AIGC风险", "查重最高相似度", "最终得分", "简短评语", "查重警告"]
+        tail_headers = ["AI评审总分", "AIGC风险", "查重最高相似度", "最终得分", "评语", "查重警告"]
         all_headers = base_headers + dim_headers + tail_headers
 
         for col, header in enumerate(all_headers, 1):
@@ -141,7 +151,7 @@ class ReportGenerator:
                 aigc.overall_risk if aigc else "N/A",
                 f"{plag.highest_similarity:.0%}" if plag else "0%",
                 final_score,
-                eval_.short_comment if eval_ else "",
+                self._format_comment(eval_.evaluation_basis) if eval_ and eval_.success else "",
                 plag_warning,
             ]
             row_data = base_data + dim_data + tail_data
