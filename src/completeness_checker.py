@@ -72,6 +72,10 @@ class CompletenessChecker:
         total_weight = sum(weights.values()) or 100
         result.score = sum(dim_scores.get(k, 0) for k in dim_scores)
         result.score = result.score * 100 / total_weight
+        # 缺章全局惩罚：每缺一章扣减最终分的 12%（上限扣 60%）
+        if result.missing_sections:
+            penalty = 1 - len(result.missing_sections) * 0.12
+            result.score *= max(0.4, penalty)
         result.score = round(result.score, 1)
         result.is_complete = result.score >= 60 and len(result.missing_sections) <= 2
 

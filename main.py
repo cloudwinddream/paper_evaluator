@@ -160,7 +160,8 @@ def _run_post_normalize(args):
     print()
 
     # 对每个分数做归一化
-    rg = ReportGenerator(str(output_dir))
+    rg = ReportGenerator(str(output_dir), output_min=output_min, output_max=output_max,
+                         output_exponent=output_exponent)
     for i, row in enumerate(rows):
         raw = row[score_col - 1].value
         normalized = rg._normalize_score(raw)
@@ -533,16 +534,6 @@ def main():
         dimensions=dimensions,
     )
     print(f"\n  📊 Excel汇总表: {excel_path}")
-
-    word_path = report_gen.generate_word_report(
-        papers=papers,
-        completeness_results=completeness_results,
-        evaluation_results=evaluation_results,
-        aigc_results=aigc_results,
-        plagiarism_results=plagiarism_results,
-        requirements=requirements_text,
-    )
-    print(f"  📝 Word详细报告: {word_path}")
 
     md_path = report_gen.generate_markdown_report(
         papers=papers,
