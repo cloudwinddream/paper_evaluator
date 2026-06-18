@@ -90,7 +90,7 @@ class ReportGenerator:
         # ── 动态列：基础列 + 每个评分维度 + 综合列 ──
         base_headers = ["序号", "学生姓名", "论文标题", "字数", "完整性得分"]
         dim_headers = [d["name"] for d in dimensions]
-        tail_headers = ["AI评审总分", "AIGC风险", "查重最高相似度", "最终得分", "简短评语", "详细评语", "查重警告"]
+        tail_headers = ["AI评审总分", "AIGC风险", "AIGC扣分", "查重最高相似度", "最终得分", "简短评语", "详细评语", "查重警告"]
         all_headers = base_headers + dim_headers + tail_headers
 
         for col, header in enumerate(all_headers, 1):
@@ -116,10 +116,13 @@ class ReportGenerator:
 
             # 最终得分（内部 0-100，最后归一化到输出范围）
             final_score = 0
+            aigc_deduction = 0
             if comp and eval_ and eval_.success:
                 final_score = comp.score * 0.2 + eval_.total_score * 0.8
                 if aigc and aigc.is_suspicious:
-                    final_score *= (1 - aigc.ai_probability * 0.5)
+                    penalty_rate = aigc.ai_probability * 0.8
+                    aigc_deduction = round(penalty_rate * 100)
+                    final_score *= (1 - penalty_rate)
                 if plag and plag.suspicious_pairs:
                     final_score *= (1 - plag.highest_similarity * 0.3)
                 final_score = self._normalize_score(final_score)
@@ -157,6 +160,7 @@ class ReportGenerator:
             tail_data = [
                 eval_.total_score if eval_ and eval_.success else "评审失败",
                 aigc.overall_risk if aigc else "N/A",
+                f"-{aigc_deduction}%" if aigc_deduction > 0 else "0%",
                 f"{plag.highest_similarity:.0%}" if plag else "0%",
                 final_score,
                 eval_.short_comment if eval_ and eval_.success else "",
@@ -187,7 +191,7 @@ class ReportGenerator:
         # ── 列宽 ──
         col_widths = [6, 12, 30, 8, 14]  # 基础列
         col_widths += [14] * len(dimensions)  # 每个维度
-        col_widths += [12, 10, 14, 10, 30, 25]  # 尾部列
+        col_widths += [12, 10, 10, 14, 10, 30, 25, 20]  # 尾部列
         for i, w in enumerate(col_widths, 1):
             ws.column_dimensions[get_column_letter(i)].width = w
 
@@ -267,6 +271,8 @@ class ReportGenerator:
             aigc = aigc_map.get(paper.student_name)
             plag = plagiarism_map.get(paper.student_name)
 
+            aigc_deduction = round(aigc.ai_probability * 80) if aigc and aigc.is_suspicious else 0
+
             doc.add_heading(f"{paper.student_name} - {paper.title}", level=2)
 
             table = doc.add_table(rows=4, cols=2, style="Light Grid Accent 1")
@@ -307,8 +313,9 @@ class ReportGenerator:
 
             doc.add_heading("AIGC检测", level=3)
             if aigc:
+                ded_str = f"，扣分 {aigc_deduction}%" if aigc_deduction > 0 and aigc.is_suspicious else ""
                 doc.add_paragraph(f"AI生成概率: {aigc.ai_probability:.0%}")
-                doc.add_paragraph(f"风险等级: {aigc.overall_risk}")
+                doc.add_paragraph(f"风险等级: {aigc.overall_risk}{ded_str}")
                 for seg in aigc.suspicious_segments[:5]:
                     doc.add_paragraph(f"• [{seg['type']}] {seg['context']}", style="List Bullet")
 
@@ -382,7 +389,7 @@ class ReportGenerator:
         # ── 汇总表 ──
         lines.append("## 评分汇总")
         lines.append("")
-        header_cols = ["序号", "学生姓名", "字数", "完整性"] + dim_names + ["总分", "AIGC风险", "查重", "最终得分", "评语"]
+        header_cols = ["序号", "学生姓名", "字数", "完整性"] + dim_names + ["总分", "AIGC风险", "AIGC扣分", "查重", "最终得分", "评语"]
         lines.append("| " + " | ".join(header_cols) + " |")
         lines.append("| " + " | ".join(["---"] * len(header_cols)) + " |")
 
@@ -392,11 +399,14 @@ class ReportGenerator:
             aigc = aigc_map.get(paper.student_name)
             plag = plagiarism_map.get(paper.student_name)
 
+            aigc_deduction = 0
             final_score = 0
             if comp and eval_ and eval_.success:
                 final_score = comp.score * 0.2 + eval_.total_score * 0.8
                 if aigc and aigc.is_suspicious:
-                    final_score *= (1 - aigc.ai_probability * 0.5)
+                    penalty_rate = aigc.ai_probability * 0.8
+                    aigc_deduction = round(penalty_rate * 100)
+                    final_score *= (1 - penalty_rate)
                 if plag and plag.suspicious_pairs:
                     final_score *= (1 - plag.highest_similarity * 0.3)
                 final_score = self._normalize_score(final_score)
@@ -412,6 +422,7 @@ class ReportGenerator:
             ] + dim_scores + [
                 str(eval_.total_score) if eval_ and eval_.success else "评审失败",
                 aigc.overall_risk if aigc else "-",
+                f"-{aigc_deduction}%" if aigc_deduction > 0 else "0%",
                 f"{plag.highest_similarity:.0%}" if plag else "0%",
                 str(final_score),
                 eval_.short_comment if eval_ else "-",
@@ -470,6 +481,8 @@ class ReportGenerator:
             aigc = aigc_map.get(paper.student_name)
             plag = plagiarism_map.get(paper.student_name)
 
+            aigc_deduction = round(aigc.ai_probability * 80) if aigc and aigc.is_suspicious else 0
+
             lines.append(f"### {paper.student_name} — {paper.title}")
             lines.append("")
             lines.append(f"**基本信息**：{paper.word_count}字 ｜ {paper.paragraph_count}段落 ｜ 图片{paper.figure_count} / 表格{paper.table_count}")
@@ -509,7 +522,8 @@ class ReportGenerator:
 
             # AIGC
             if aigc:
-                lines.append(f"**AIGC检测**：{aigc.overall_risk}（AI概率 {aigc.ai_probability:.0%}）")
+                ded_str = f"，扣分 {aigc_deduction}%" if aigc_deduction > 0 and aigc.is_suspicious else ""
+                lines.append(f"**AIGC检测**：{aigc.overall_risk}（AI概率 {aigc.ai_probability:.0%}{ded_str}）")
                 for seg in aigc.suspicious_segments[:3]:
                     lines.append(f"- [{seg['type']}] {seg['context']}")
                 lines.append("")

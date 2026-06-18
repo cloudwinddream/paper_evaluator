@@ -399,6 +399,11 @@ def main():
     if not papers:
         print("  ✗ 未找到任何文档（.docx/.doc/.pdf），请检查路径")
         sys.exit(1)
+
+    # 按学号排序
+    papers.sort(key=lambda p: p.student_name)
+    for i, p in enumerate(papers, 1):
+        print(f"  {i}. {p.student_name} ({p.filename})")
     print(f"  ✓ 共解析 {len(papers)} 篇论文")
 
     print("\n[3/7] 图片分析...")
