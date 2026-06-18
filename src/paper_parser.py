@@ -126,16 +126,28 @@ def _extract_images_from_doc_via_com(doc_path: Path) -> list[ImageData]:
 
         # 收集 HTML 同目录下的图片文件
         img_exts = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".emf", ".wmf"}
+        mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                    ".gif": "image/gif", ".bmp": "image/bmp", ".tiff": "image/tiff",
+                    ".emf": "image/x-emf", ".wmf": "image/x-wmf"}
         for f in sorted(export_dir.rglob("*")):
             if not f.is_file() or f.suffix.lower() not in img_exts:
                 continue
             with open(f, "rb") as fh:
                 img_bytes = fh.read()
+            # 过滤过小的图片（Word 导出 HTML 时常产生箭头/分隔线等小图标）
+            if len(img_bytes) < 1024:
+                continue
+            try:
+                from PIL import Image as PILImage
+                import io
+                pil_img = PILImage.open(io.BytesIO(img_bytes))
+                w, h = pil_img.size
+                if w < 20 or h < 20:
+                    continue
+            except Exception:
+                pass
             b64_str = base64.b64encode(img_bytes).decode("utf-8")
             ext = f.suffix.lower()
-            mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-                        ".gif": "image/gif", ".bmp": "image/bmp", ".tiff": "image/tiff",
-                        ".emf": "image/x-emf", ".wmf": "image/x-wmf"}
             images.append(ImageData(
                 index=len(images) + 1,
                 section="body",

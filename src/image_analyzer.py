@@ -221,6 +221,14 @@ class ImageAnalyzer:
         for img in images:
             try:
                 compressed_data = self._compress_image(img.base64_data, img.mime_type)
+                # 压缩后再次检查尺寸，过滤过小的图片
+                if _PIL_AVAILABLE:
+                    raw = base64.b64decode(compressed_data)
+                    test_img = Image.open(io.BytesIO(raw))
+                    w, h = test_img.size
+                    if w < 20 or h < 20:
+                        logger.info("图片 #%d 尺寸过小 (%dx%d)，跳过分析", img.index, w, h)
+                        continue
                 # 创建一个轻量副本以便压缩后使用
                 compressed.append(_ImageItem(
                     index=img.index,
