@@ -61,6 +61,7 @@ OUTPUT_DIR=./outputs
 - 文件名建议包含学生姓名或学号
 - 支持命名格式：`学部-专业-班级-学号-姓名.doc`、`姓名_题目.docx`、`学号_姓名.pdf` 等
 - **支持 .zip 压缩包**：系统自动解压，将内部文档文件重命名为压缩包的名字（如 `张三.zip` → `张三.docx`），解压后自动删除压缩包
+- 报告输出按**学号**自动排序（Excel / MD / Word 三个报告均按学号排列）
 
 ### 4. 运行评审
 
@@ -183,7 +184,7 @@ python main.py --post-normalize ./outputs --output-min 60 --output-max 90 --outp
 internal_score = completeness × 0.2 + total_score × 0.8
 
 # 2. 惩罚扣减
-if AIGC 可疑:   internal_score *= (1 - ai_probability × 0.5)   # 最高扣 50%
+if AIGC 可疑:   internal_score *= (1 - ai_probability × 0.8)   # 最高扣 80%
 if 查重有风险:  internal_score *= (1 - highest_similarity × 0.3) # 最高扣 30%
 
 # 3. 后处理归一化（仅在有映射参数时执行）
@@ -236,7 +237,7 @@ Prompt 内置强制分布要求，防止 AI 给分集中在高分段：
 - **AI 特征词检测**：中英文 AI 套话模式匹配
 - **伪实现识别**：前端截图伪装、代码模板化、数据库与代码脱节
 - **风险阈值**：0.7 高风险 / 0.45 中风险 / 0.25 低风险
-- **惩罚权重**：AI 概率 × 0.5（最高扣 50%）
+- **惩罚权重**：AI 概率 × 0.8（最高扣 80%，在最终得分中直接扣减，Excel/MD 报告新增 AIGC 扣分列）
 
 ## 查重检测（`--plagiarism`）
 
@@ -314,7 +315,7 @@ paper_evaluator/
 - AIGC 检测结果仅供参考，需人工复核
 - 查重仅对比本次提交的论文之间，默认关闭
 - 首次运行会自动调用 API 生成评分标准和完整性规则，需要有效的 API 配置
-- `.doc` 文件依赖本地 Microsoft Word 转换（自动调用 COM 接口，仅 Windows）
+- `.doc` 文件依赖本地 Microsoft Word 转换（自动调用 COM 接口，仅 Windows）；图片提取通过 Word COM 将文档另存为 HTML 后采集，自动过滤 < 20px 的微小图片
 - `.pdf` 文件通过 `pypdf` 解析文本 + `PyMuPDF` 统计图片数量，失败时自动降级到 MarkItDown
 - `markitdown` 为可选依赖（不安装不影响主流程，仅影响降级兜底能力）
 - 查重功能依赖 `jieba` 分词库，需 `pip install -r requirements.txt`
