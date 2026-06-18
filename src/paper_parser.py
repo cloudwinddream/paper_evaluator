@@ -431,11 +431,19 @@ class PaperParser:
                         extracted.append(dest)
                         print(f"[解压成功] {zip_path.name} → {new_name}")
 
-                    # 清理临时目录，删除压缩包
+                    # 清理临时目录
                     import shutil
                     shutil.rmtree(extract_dir, ignore_errors=True)
+            except Exception as e:
+                print(f"[解压失败] {zip_path.name}: {e}")
+
+            # 关闭文件后再删除压缩包
+            if zip_path.exists():
+                try:
                     zip_path.unlink()
                     print(f"[解压完成] 已删除压缩包: {zip_path.name}")
+                except Exception as e:
+                    print(f"[解压提示] 删除压缩包失败: {zip_path.name}: {e}")
             except Exception as e:
                 print(f"[解压失败] {zip_path.name}: {e}")
         return extracted
@@ -491,7 +499,6 @@ class PaperParser:
 
         遍历每个段落，检查 XML 中是否有 a:blip 元素（表示嵌入的图片）。
         追踪当前章节，提取上下文文本作为 caption_context。
-        最多提取 10 张图片。
         """
         images: list[ImageData] = []
         current_section = "header"
@@ -523,10 +530,6 @@ class PaperParser:
                     continue
 
                 for blip in blips:
-                    if len(images) >= 10:
-                        print("[图片提取] 达到提取上限(10张)，停止提取")
-                        return images
-
                     # 获取关系 ID (r:embed 属性)
                     r_embed = blip.get(f"{{{ns_r}}}embed")
                     if not r_embed:
@@ -628,16 +631,10 @@ class PaperParser:
             }
 
             for page_num in range(len(doc)):
-                if len(images) >= 10:
-                    break
-
                 page = doc[page_num]
                 image_list = page.get_images(full=True)
 
                 for img_ref in image_list:
-                    if len(images) >= 10:
-                        break
-
                     xref = img_ref[0]
                     try:
                         img_info = doc.extract_image(xref)
