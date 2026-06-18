@@ -3,6 +3,8 @@
 负责读取和解析Word文档，提取文本内容、结构信息等
 """
 
+from __future__ import annotations
+
 import base64
 import re
 import subprocess
