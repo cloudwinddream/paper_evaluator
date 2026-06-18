@@ -82,6 +82,73 @@ def _try_via_libreoffice(doc_path: Path) -> Path | None:
         return None
 
 
+def _count_images_from_doc_via_com(doc_path: Path) -> int:
+    """使用 Word COM 直接统计 .doc 文件中的图片数量（避免转换丢失）"""
+    try:
+        import win32com.client
+        word = win32com.client.DispatchEx("Word.Application")
+        word.Visible = False
+        doc = word.Documents.Open(
+            str(doc_path.absolute()), ReadOnly=True,
+            AddToRecentFiles=False, OpenAndRepair=True,
+        )
+        count = doc.InlineShapes.Count + doc.Shapes.Count
+        doc.Close()
+        word.Quit()
+        return count
+    except Exception:
+        try: word.Quit()
+        except: pass
+        return 0
+
+
+def _extract_images_from_doc_via_com(doc_path: Path) -> list[ImageData]:
+    """使用 Word COM 将 .doc 另存为 HTML，从中提取图片"""
+    images: list[ImageData] = []
+    try:
+        import win32com.client
+        import tempfile, shutil
+        word = win32com.client.DispatchEx("Word.Application")
+        word.Visible = False
+        doc = word.Documents.Open(
+            str(doc_path.absolute()), ReadOnly=True,
+            AddToRecentFiles=False, OpenAndRepair=True,
+        )
+        export_dir = Path(tempfile.mkdtemp())
+        html_path = export_dir / "output.html"
+
+        # 另存为筛选过的 HTML（wdFormatFilteredHTML = 10），Word 自动在旁生成图片文件夹
+        doc.SaveAs(str(html_path), FileFormat=10)
+        doc.Close()
+        word.Quit()
+
+        # 收集 HTML 同目录下的图片文件
+        img_exts = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".emf", ".wmf"}
+        for f in sorted(export_dir.rglob("*")):
+            if not f.is_file() or f.suffix.lower() not in img_exts:
+                continue
+            with open(f, "rb") as fh:
+                img_bytes = fh.read()
+            b64_str = base64.b64encode(img_bytes).decode("utf-8")
+            ext = f.suffix.lower()
+            mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                        ".gif": "image/gif", ".bmp": "image/bmp", ".tiff": "image/tiff",
+                        ".emf": "image/x-emf", ".wmf": "image/x-wmf"}
+            images.append(ImageData(
+                index=len(images) + 1,
+                section="body",
+                caption_context="",
+                mime_type=mime_map.get(ext, "image/png"),
+                base64_data=b64_str,
+            ))
+
+        shutil.rmtree(export_dir, ignore_errors=True)
+    except Exception:
+        try: word.Quit()
+        except: pass
+    return images
+
+
 def _try_via_word(doc_path: Path) -> Path | None:
     """策略2: 通过 Word COM 直接打开（含修复模式）"""
     try:
@@ -326,11 +393,17 @@ class PaperParser:
                 # 段落数
                 paper.paragraph_count = len(doc.paragraphs)
 
-                # 图片数量
-                paper.figure_count = self._count_figures(doc)
-
-                # 提取图片数据
-                paper.images = self._extract_images_from_docx(doc)
+                # 图片数量 & 提取（.doc 用 COM 直接读取，.docx 用 python-docx）
+                if is_doc:
+                    paper.figure_count = _count_images_from_doc_via_com(filepath)
+                    paper.images = _extract_images_from_doc_via_com(filepath)
+                    if not paper.images and paper.figure_count > 0:
+                        # COM 提取失败，改用转换后的 docx
+                        paper.images = self._extract_images_from_docx(doc)
+                        paper.figure_count = max(paper.figure_count, self._count_figures(doc))
+                else:
+                    paper.figure_count = self._count_figures(doc)
+                    paper.images = self._extract_images_from_docx(doc)
 
                 # 表格数量
                 paper.table_count = len(doc.tables)
