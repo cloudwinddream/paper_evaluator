@@ -517,8 +517,6 @@ class PaperParser:
                     print(f"[解压完成] 已删除压缩包: {zip_path.name}")
                 except Exception as e:
                     print(f"[解压提示] 删除压缩包失败: {zip_path.name}: {e}")
-            except Exception as e:
-                print(f"[解压失败] {zip_path.name}: {e}")
         return extracted
 
     def parse_directory(self, directory: str | Path) -> list[ParsedPaper]:
