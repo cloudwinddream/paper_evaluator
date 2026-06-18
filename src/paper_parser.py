@@ -402,9 +402,49 @@ class PaperParser:
         images = self._extract_images_from_pdf(filepath)
         return self._build_paper_from_text(filepath, raw_text, figure_count, images=images)
 
+    def _extract_and_rename_zips(self, directory: Path) -> list[Path]:
+        """解压目录下的所有 .zip 文件，并将内部文件重命名为压缩包的名字"""
+        extracted: list[Path] = []
+        for zip_path in sorted(directory.glob("*.zip")):
+            stem = zip_path.stem
+            import zipfile
+            try:
+                with zipfile.ZipFile(zip_path, "r") as zf:
+                    # 解压到同名临时子目录，避免覆盖已有文件
+                    extract_dir = directory / f".{stem}_extracted"
+                    extract_dir.mkdir(parents=True, exist_ok=True)
+                    zf.extractall(extract_dir)
+
+                    for f in sorted(extract_dir.rglob("*")):
+                        if not f.is_file():
+                            continue
+                        # 跳过常见的非文档文件
+                        if f.suffix.lower() not in (".docx", ".doc", ".pdf"):
+                            continue
+                        new_name = stem + f.suffix
+                        dest = directory / new_name
+                        # 如果目标已存在则跳过
+                        if dest.exists():
+                            print(f"[解压提示] {new_name} 已存在，跳过")
+                            continue
+                        f.rename(dest)
+                        extracted.append(dest)
+                        print(f"[解压成功] {zip_path.name} → {new_name}")
+
+                    # 清理临时目录，删除压缩包
+                    import shutil
+                    shutil.rmtree(extract_dir, ignore_errors=True)
+                    zip_path.unlink()
+                    print(f"[解压完成] 已删除压缩包: {zip_path.name}")
+            except Exception as e:
+                print(f"[解压失败] {zip_path.name}: {e}")
+        return extracted
+
     def parse_directory(self, directory: str | Path) -> list[ParsedPaper]:
         """解析目录下所有支持的文件（.docx, .doc, .pdf）"""
         directory = Path(directory)
+        # 先处理 zip 压缩包
+        self._extract_and_rename_zips(directory)
         self.papers = []
 
         docx_names = {f.stem for f in directory.glob("*.docx")}
