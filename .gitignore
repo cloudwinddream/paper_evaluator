@@ -38,3 +38,6 @@ outputs/
 
 # 测试文件
 test_papers/
+
+# 结果缓存
+.result_cache/

@@ -24,6 +24,7 @@ from src.aigc_detector import AIGCDetector
 from src.plagiarism_checker import PlagiarismChecker
 from src.report_generator import ReportGenerator
 from src.standards_generator import StandardsGenerator
+from src.result_cache import save_results, load_existing_results, get_evaluated_names, _find_excel_report
 
 try:
     from openpyxl import load_workbook
@@ -200,6 +201,11 @@ def main():
         "--output", "-o",
         default=None,
         help="输出目录（覆盖.env中的配置）"
+    )
+    parser.add_argument(
+        "--incremental",
+        action="store_true",
+        help="增量模式：跳过已有评审结果的学生，只评审新增论文"
     )
     parser.add_argument(
         "--skip-ai",
@@ -409,6 +415,9 @@ def main():
         print(f"  {i:>4}  {p.student_name:<28}  {p.filename:<50}")
     print(f"\n  ✓ 共解析 {len(papers)} 篇论文")
 
+    # 保留完整列表供增量模式生成报告用
+    all_papers = papers[:]
+
     # 确认学生列表
     try:
         resp = input("\n  确认上述学生信息无误？继续评审请输入 Y 或直接回车：").strip()
@@ -420,6 +429,39 @@ def main():
     except KeyboardInterrupt:
         print("\n  ✗ 已取消")
         sys.exit(0)
+
+    # ── 增量模式：检测已有结果，询问或自动跳过 ──
+    cached_eval = cached_comp = cached_aigc = cached_plag = []
+    use_incremental = args.incremental
+    if not use_incremental and _find_excel_report(str(output_path)):
+        try:
+            resp = input("\n  检测到已有评审报告，是否增量评审（跳过已评，只审新增）？[Y/n]：").strip()
+            use_incremental = resp.upper() != "N"
+        except EOFError:
+            use_incremental = True
+
+    if use_incremental:
+        cached_eval, cached_comp, cached_aigc, cached_plag = load_existing_results(str(output_path), dimensions)
+        evaluated_names = {r.student_name for r in cached_eval}
+        new_papers = [p for p in papers if p.student_name not in evaluated_names]
+        skipped = len(papers) - len(new_papers)
+        if skipped:
+            print(f"\n  ⏭ 跳过 {skipped} 篇已有评审结果，待评审 {len(new_papers)} 篇")
+        else:
+            print(f"\n  ✓ 所有 {len(papers)} 篇论文已有评审结果")
+        papers = new_papers
+        if not papers:
+            print("\n  无新增论文，直接生成报告...")
+            report_gen = ReportGenerator(str(output_path), score_min=score_min, score_max=score_max,
+                                        output_min=output_min, output_max=output_max, output_exponent=output_exponent)
+            report_gen.generate_excel(papers=all_papers, completeness_results=cached_comp, evaluation_results=cached_eval,
+                                      aigc_results=cached_aigc, plagiarism_results=cached_plag, dimensions=dimensions)
+            report_gen.generate_markdown_report(papers=all_papers, completeness_results=cached_comp, evaluation_results=cached_eval,
+                                                aigc_results=cached_aigc, plagiarism_results=cached_plag, dimensions=dimensions)
+            print("\n" + "=" * 60)
+            print("评审完成！")
+            print("=" * 60)
+            return
 
     print("\n[3/7] 图片分析...")
     paper_image_analysis: dict[str, list] = {}
@@ -532,6 +574,18 @@ def main():
     else:
         print("\n[7/7] 跳过AI评审")
 
+    # ── 合并缓存 + 新结果并保存 ──
+    if use_incremental:
+        _all_eval = cached_eval + evaluation_results
+        _all_comp = cached_comp + completeness_results
+        _all_aigc = cached_aigc + aigc_results
+        _all_plag = cached_plag + plagiarism_results
+    else:
+        _all_eval, _all_comp, _all_aigc, _all_plag = evaluation_results, completeness_results, aigc_results, plagiarism_results
+        all_papers = papers
+
+    save_results(str(output_path), _all_eval, _all_comp, _all_aigc, _all_plag)
+
     print("\n" + "=" * 60)
     print("生成报告...")
     print("=" * 60)
@@ -546,21 +600,21 @@ def main():
     )
 
     excel_path = report_gen.generate_excel(
-        papers=papers,
-        completeness_results=completeness_results,
-        evaluation_results=evaluation_results,
-        aigc_results=aigc_results,
-        plagiarism_results=plagiarism_results,
+        papers=all_papers,
+        completeness_results=_all_comp,
+        evaluation_results=_all_eval,
+        aigc_results=_all_aigc,
+        plagiarism_results=_all_plag,
         dimensions=dimensions,
     )
     print(f"\n  📊 Excel汇总表: {excel_path}")
 
     md_path = report_gen.generate_markdown_report(
-        papers=papers,
-        completeness_results=completeness_results,
-        evaluation_results=evaluation_results,
-        aigc_results=aigc_results,
-        plagiarism_results=plagiarism_results,
+        papers=all_papers,
+        completeness_results=_all_comp,
+        evaluation_results=_all_eval,
+        aigc_results=_all_aigc,
+        plagiarism_results=_all_plag,
         dimensions=dimensions,
     )
     print(f"  📄 MD评审报告: {md_path}")

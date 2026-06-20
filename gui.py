@@ -129,6 +129,8 @@ class App(Tk):
         self.out_entry.grid(row=row, column=1, sticky="ew", padx=2)
         ttk.Button(parent, text="浏览…", command=lambda: self._browse_dir(self.out_var)
                    ).grid(row=row, column=2, padx=(4, 0))
+        self.out_var.trace_add("write", lambda *_: self._check_existing_report())
+        self.after(200, self._check_existing_report)
         row += 1
 
         ttk.Label(parent, text="评分标准文件:").grid(row=row, column=0, sticky="w", padx=(0, 6))
@@ -192,6 +194,9 @@ class App(Tk):
 
         self.plagiarism_var = BooleanVar(value=False)
         ttk.Checkbutton(opt_frame, text="启用查重检测", variable=self.plagiarism_var).pack(side="left", padx=(0, 12))
+
+        self.incremental_var = BooleanVar(value=False)
+        ttk.Checkbutton(opt_frame, text="增量评审（跳过已评）", variable=self.incremental_var).pack(side="left", padx=(0, 12))
 
         self.skip_std_var = BooleanVar(value=False)
         ttk.Checkbutton(opt_frame, text="使用已有评分标准", variable=self.skip_std_var).pack(side="left", padx=(0, 12))
@@ -345,6 +350,12 @@ class App(Tk):
 
     # ── 执行流水线 ──
 
+    def _check_existing_report(self):
+        """检测输出目录是否有已有报告，自动勾选增量评审"""
+        out = Path(self.out_var.get().strip() or "./outputs")
+        has_report = any(out.glob("scores_summary*.xlsx")) if out.exists() else False
+        self.incremental_var.set(has_report)
+
     def _build_args(self, generate_only: bool = False) -> list[str]:
         args = [sys.executable, "main.py"]
 
@@ -371,6 +382,8 @@ class App(Tk):
             args.append("--skip-ai")
         if self.plagiarism_var.get():
             args.append("--plagiarism")
+        if self.incremental_var.get():
+            args.append("--incremental")
         if generate_only:
             args.append("--generate-standards")
         else:
@@ -420,6 +433,7 @@ class App(Tk):
                 args,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
