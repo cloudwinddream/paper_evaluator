@@ -540,29 +540,25 @@ class PaperParser:
         self._extract_and_rename_zips(directory)
         self.papers = []
 
-        # 去重：同名学生有多个格式时，按 DOCX > DOC > PDF 优先级只保留一个
-        docx_stems = {f.stem for f in directory.glob("*.docx")}
-        doc_stems = {f.stem for f in directory.glob("*.doc")}
-        skip_stems = docx_stems | doc_stems  # 有 docx/doc 优先，跳过同名的 pdf
-        seen_stems: set[str] = set()  # 已处理的 stem，避免同格式重复
-        for filepath in sorted(directory.glob("*.docx")) + sorted(directory.glob("*.doc")) + sorted(directory.glob("*.pdf")):
-            stem = filepath.stem
-            # .doc 和 .docx 同存时跳过 .doc
-            if filepath.suffix.lower() == ".doc" and stem in docx_stems:
-                continue
-            # .pdf 和 .docx/.doc 同存时跳过 .pdf
-            if filepath.suffix.lower() == ".pdf" and stem in skip_stems:
-                continue
-            # 同格式重复（如多个同名的 .pdf），只取第一个
-            if stem in seen_stems:
-                continue
-            seen_stems.add(stem)
+        # 去重：按学号-姓名分组，同名学生只取优先级最高的文件（DOCX > DOC > PDF）
+        priority = {".docx": 0, ".doc": 1, ".pdf": 2}
+        student_map: dict[str, list[Path]] = {}
+        for suffix in (".docx", ".doc", ".pdf"):
+            for fp in sorted(directory.glob(f"*{suffix}")):
+                sid = self._extract_student_name(fp.name)
+                student_map.setdefault(sid, []).append(fp)
+
+        for sid, files in student_map.items():
+            files.sort(key=lambda f: priority.get(f.suffix.lower(), 99))
+            chosen = files[0]
+            for f in files[1:]:
+                print(f"[跳过重复] {f.name}（同名学生，已有 {chosen.name}）")
             try:
-                paper = self.parse_file(filepath)
+                paper = self.parse_file(chosen)
                 self.papers.append(paper)
-                print(f"[解析成功] {filepath.name} - {paper.word_count}字")
+                print(f"[解析成功] {chosen.name} - {paper.word_count}字")
             except Exception as e:
-                print(f"[解析失败] {filepath.name}: {e}")
+                print(f"[解析失败] {chosen.name}: {e}")
 
         return self.papers
 
