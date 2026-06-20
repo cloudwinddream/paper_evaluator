@@ -540,11 +540,23 @@ class PaperParser:
         self._extract_and_rename_zips(directory)
         self.papers = []
 
-        docx_names = {f.stem for f in directory.glob("*.docx")}
+        # 去重：同名学生有多个格式时，按 DOCX > DOC > PDF 优先级只保留一个
+        docx_stems = {f.stem for f in directory.glob("*.docx")}
+        doc_stems = {f.stem for f in directory.glob("*.doc")}
+        skip_stems = docx_stems | doc_stems  # 有 docx/doc 优先，跳过同名的 pdf
+        seen_stems: set[str] = set()  # 已处理的 stem，避免同格式重复
         for filepath in sorted(directory.glob("*.docx")) + sorted(directory.glob("*.doc")) + sorted(directory.glob("*.pdf")):
-            # 同名的 .doc 和 .docx 同时存在时，跳过 .doc 避免重复
-            if filepath.suffix.lower() == ".doc" and filepath.stem in docx_names:
+            stem = filepath.stem
+            # .doc 和 .docx 同存时跳过 .doc
+            if filepath.suffix.lower() == ".doc" and stem in docx_stems:
                 continue
+            # .pdf 和 .docx/.doc 同存时跳过 .pdf
+            if filepath.suffix.lower() == ".pdf" and stem in skip_stems:
+                continue
+            # 同格式重复（如多个同名的 .pdf），只取第一个
+            if stem in seen_stems:
+                continue
+            seen_stems.add(stem)
             try:
                 paper = self.parse_file(filepath)
                 self.papers.append(paper)
