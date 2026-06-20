@@ -681,12 +681,11 @@ class PaperParser:
         遍历每一页，使用 page.get_images() 获取图片引用，
         通过 doc.extract_image(xref) 获取图片二进制数据。
         建立页面→章节映射以确定图片所在章节。
-        最多提取 10 张图片。
         """
-        import fitz  # pymupdf
         images: list[ImageData] = []
 
         try:
+            import fitz  # pymupdf
             doc = fitz.open(str(pdf_path))
 
             # 构建页面→章节映射
