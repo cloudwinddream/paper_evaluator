@@ -402,9 +402,22 @@ def main():
 
     # 按学号排序
     papers.sort(key=lambda p: p.student_name)
+    print("\n  学生列表（按学号排序）：")
+    print(f"  {'序号':>4}  {'学号-姓名':<28}  {'文件':<50}")
+    print(f"  {'-'*4}  {'-'*28}  {'-'*50}")
     for i, p in enumerate(papers, 1):
-        print(f"  {i}. {p.student_name} ({p.filename})")
-    print(f"  ✓ 共解析 {len(papers)} 篇论文")
+        print(f"  {i:>4}  {p.student_name:<28}  {p.filename:<50}")
+    print(f"\n  ✓ 共解析 {len(papers)} 篇论文")
+
+    # 确认
+    try:
+        resp = input("\n  确认上述学生信息无误？继续评审请输入 Y 或直接回车：").strip()
+        if resp and resp.upper() != "Y":
+            print("  ✗ 已取消")
+            sys.exit(0)
+    except (EOFError, KeyboardInterrupt):
+        print("\n  ✗ 已取消")
+        sys.exit(0)
 
     print("\n[3/7] 图片分析...")
     paper_image_analysis: dict[str, list] = {}
